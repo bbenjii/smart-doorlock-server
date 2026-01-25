@@ -13,6 +13,8 @@ from fastapi.responses import Response, StreamingResponse
 from starlette.websockets import WebSocketState
 
 from users_controller import authenticate_user, create_user
+from auth_service import has_access, claim_device
+
 
 app = FastAPI()
 
@@ -308,20 +310,42 @@ async def mjpeg_stream(device_id: str):
 # ------------- HTTP: Send command from mobile -> ESP -------------
 
 @app.post("/send-command/{device_id}/{cmd}")
-async def send_command(device_id: str, cmd: str):
+async def send_command(device_id: str, cmd: str, user_id: str):
+    cmd_upper = cmd.upper()
+
+    if cmd_upper not in ("LOCK", "UNLOCK", "GET_STATUS"):
+        return {"ok": False, "error": "Invalid command"}
+
+    # 🔐 RBAC CHECK (BE-003)
+    if not has_access(user_id, device_id, cmd_upper):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     ws = connected_devices.get(device_id)
     if not ws:
         return {"ok": False, "error": "Device not connected"}
 
-    cmd_upper = cmd.upper()
-    if cmd_upper not in ("LOCK", "UNLOCK", "GET_STATUS"):
-        return {"ok": False, "error": "Invalid command"}
-
     await ws.send_text(cmd_upper if cmd_upper != "GET_STATUS" else "get_status")
     return {"ok": True, "command": cmd_upper}
 
+# ------------- HTTP: Claim device ---------------------
+
+@app.post("/devices/{device_id}/claim")
+async def claim(device_id: str, body: dict):
+    user_id = body.get("userId")
+    pairing_code = body.get("pairingCode")
+
+    if not user_id or not pairing_code:
+        raise HTTPException(status_code=400, detail="Missing userId or pairingCode")
+
+    ok, msg = claim_device(user_id, device_id, pairing_code)
+
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    return {"ok": True, "message": msg}
 
 # ------------- HTTP: Get last known status -------------
+
 
 @app.get("/status/{device_id}")
 async def get_status(device_id: str):
