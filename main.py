@@ -14,13 +14,22 @@ from starlette.websockets import WebSocketState
 
 from users_controller import authenticate_user, create_user
 from auth_service import has_access, claim_device
+from event_service import ingest_event
 
 from dev_state_service import (
     mark_device_online,
     mark_device_offline,
     persist_status_update,
     persist_command_result,
+    get_last_seen,
 )
+
+from command_service import (
+    create_command,
+    deliver_command_with_retry,
+    mark_command_acknowledged,
+)
+
 app = FastAPI()
 
 app.add_middleware(
@@ -87,24 +96,21 @@ async def signup(user_data: dict):
 async def connection_watchdog(websocket: WebSocket, device_id: str):
     try:
         while True:
-            await asyncio.sleep(5)  # check every 5 seconds
-            # await send_command(device_id, "GET_STATUS")
+            await asyncio.sleep(5)
+
             ws = connected_devices.get(device_id)
             if ws:
                 await ws.send_text("GET_STATUS")
-        
-            now = datetime.now()
-            
-            last_timestamp = last_status[device_id].get("timestamp")
-            last_timestamp = datetime.strptime(last_timestamp, "%d/%m/%Y, %H:%M:%S")
-            difference = now - last_timestamp
-            if difference.seconds > 10:
-                print(f"[{device_id}] WebSocket is no longer connected (watchdog).")
-                if device_id and connected_devices.get(device_id) is websocket:
-                    del connected_devices[device_id]
+
+            last_seen = get_last_seen(device_id)
+            if not last_seen:
+                continue
+
+            if (datetime.utcnow() - last_seen).seconds > 10:
+                print(f"[{device_id}] Device considered offline (watchdog)")
                 break
+
     except asyncio.CancelledError:
-        # normal when we cancel the task on exit
         pass
     
 @app.websocket("/ws/device")
@@ -184,6 +190,10 @@ async def device_ws(websocket: WebSocket):
 
                 elif msg_type == "command_finished":
                     print(f"Command finished from {device_id}: {data}")
+                    command_id = data.get("commandId")
+                    if command_id:
+                        mark_command_acknowledged(command_id)
+
                     new_status = data.get("new_status")
                     if isinstance(new_status, str):
                         persist_command_result(device_id, new_status)
@@ -199,7 +209,13 @@ async def device_ws(websocket: WebSocket):
                         }
                         last_status[device_id] = status_payload
                         await broadcast_status(device_id, status_payload)
-
+                elif msg_type == "event":
+                    ingest_event(
+                        device_id=device_id,
+                        event_type=data.get("eventType"),
+                        user_id=data.get("userId"),
+                        auth_method=data.get("authMethod"),
+                    )
                 else:
                     print(f"Unknown/unused message from {device_id}: {text}")
 
@@ -331,7 +347,7 @@ async def send_command(device_id: str, cmd: str, user_id: str):
     if cmd_upper not in ("LOCK", "UNLOCK", "GET_STATUS"):
         return {"ok": False, "error": "Invalid command"}
 
-    # 🔐 RBAC CHECK (BE-003)
+    
     if not has_access(user_id, device_id, cmd_upper):
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -339,8 +355,19 @@ async def send_command(device_id: str, cmd: str, user_id: str):
     if not ws:
         return {"ok": False, "error": "Device not connected"}
 
-    await ws.send_text(cmd_upper if cmd_upper != "GET_STATUS" else "get_status")
-    return {"ok": True, "command": cmd_upper}
+    command_id = create_command(device_id, user_id, cmd_upper)
+
+    asyncio.create_task(
+    deliver_command_with_retry(
+        command_id,
+        device_id,
+        cmd_upper,
+        connected_devices,
+        )
+    )   
+
+    return {"ok": True, "commandId": command_id}
+
 
 # ------------- HTTP: Claim device ---------------------
 

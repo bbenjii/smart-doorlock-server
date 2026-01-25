@@ -80,3 +80,10 @@ def persist_command_result(device_id: str, new_status: str):
         status=new_status,
         online=True,
     )
+
+# ------------------ last seen retrieval -------------------
+def get_last_seen(device_id: str):
+    doc = db.collection("deviceState").document(device_id).get()
+    if not doc.exists:
+        return None
+    return doc.to_dict().get("lastSeenAt")
