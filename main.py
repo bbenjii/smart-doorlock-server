@@ -15,7 +15,12 @@ from starlette.websockets import WebSocketState
 from users_controller import authenticate_user, create_user
 from auth_service import has_access, claim_device
 
-
+from dev_state_service import (
+    mark_device_online,
+    mark_device_offline,
+    persist_status_update,
+    persist_command_result,
+)
 app = FastAPI()
 
 app.add_middleware(
@@ -132,6 +137,7 @@ async def device_ws(websocket: WebSocket):
 
         connected_devices[device_id] = websocket
         print(f"Device registered: {device_id}")
+        mark_device_online(device_id)
 
         if device_id in last_status:
             await broadcast_status(device_id, last_status[device_id])
@@ -163,16 +169,25 @@ async def device_ws(websocket: WebSocket):
                     data = None
 
                 if msg_type == "status":
-                    now = datetime.now().strftime("%d/%m/%Y, %H:%M:%S")
-                    data["timestamp"] = now
+                    persist_status_update(
+                    device_id=device_id,
+                    status=data.get("status"),
+                    battery_level=data.get("battery"),
+                    current_user=data.get("currentUser"),
+                    )
+
                     data["online"] = True
                     last_status[device_id] = data
-                    
+
                     await broadcast_status(device_id, data)
+
 
                 elif msg_type == "command_finished":
                     print(f"Command finished from {device_id}: {data}")
                     new_status = data.get("new_status")
+                    if isinstance(new_status, str):
+                        persist_command_result(device_id, new_status)
+
                     now = datetime.now().strftime("%d/%m/%Y, %H:%M:%S")
                     data["timestamp"] = now
                     data["online"] = True
@@ -210,14 +225,14 @@ async def device_ws(websocket: WebSocket):
     finally:
         if device_id and connected_devices.get(device_id) is websocket:
             del connected_devices[device_id]
+
+        if device_id:
+            mark_device_offline(device_id)
+
         watchdog.cancel()
         print(f"Device unregistered: {device_id}")
 
         
-
-
-
-
 
 # ------------- WebSocket: Mobile clients -------------
 
