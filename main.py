@@ -30,6 +30,11 @@ from command_service import (
     mark_command_acknowledged,
 )
 
+from fastapi import Query
+from typing import Optional
+from event_service import query_events
+from audit_service import write_audit
+
 app = FastAPI()
 
 app.add_middleware(
@@ -349,7 +354,22 @@ async def send_command(device_id: str, cmd: str, user_id: str):
 
     
     if not has_access(user_id, device_id, cmd_upper):
+        write_audit(
+            action="COMMAND_DENIED",
+            actor_user_id=user_id,
+            device_id=device_id,
+            status="DENIED",
+            details={"command": cmd_upper},
+        )
         raise HTTPException(status_code=403, detail="Access denied")
+    
+    write_audit(
+        action="COMMAND_ISSUED",
+        actor_user_id=user_id,
+        device_id=device_id,
+        status="SUCCESS",
+        details={"command": cmd_upper},
+    )
 
     ws = connected_devices.get(device_id)
     if not ws:
@@ -382,12 +402,24 @@ async def claim(device_id: str, body: dict):
     ok, msg = claim_device(user_id, device_id, pairing_code)
 
     if not ok:
+        write_audit(
+            action="CLAIM_DEVICE",
+            actor_user_id=user_id,
+            device_id=device_id,
+            status="FAILED",
+            details={"reason": msg},
+        )
         raise HTTPException(status_code=400, detail=msg)
+    write_audit(
+        action="CLAIM_DEVICE",
+        actor_user_id=user_id,
+        device_id=device_id,
+        status="SUCCESS",
+    )
 
     return {"ok": True, "message": msg}
 
 # ------------- HTTP: Get last known status -------------
-
 
 @app.get("/status/{device_id}")
 async def get_status(device_id: str):
@@ -396,6 +428,69 @@ async def get_status(device_id: str):
     if not data:
         return {"deviceId": device_id, "status": None, "online": device_id in connected_devices}
     return {**data, "online": device_id in connected_devices}
+
+# ------------- HTTP: Query events -------------
+
+@app.get("/devices/{device_id}/events")
+async def get_device_events(
+    device_id: str,
+    requester_id: str,  
+    user_id: Optional[str] = Query(default=None),
+    event_type: Optional[str] = Query(default=None),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor_ts: Optional[str] = Query(default=None),
+):
+
+    if not has_access(requester_id, device_id, "GET_STATUS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    start_dt = datetime.fromisoformat(start) if start else None
+    end_dt = datetime.fromisoformat(end) if end else None
+    cursor_dt = datetime.fromisoformat(cursor_ts) if cursor_ts else None
+
+    return query_events(
+        device_id=device_id,
+        user_id=user_id,
+        event_type=event_type,
+        start=start_dt,
+        end=end_dt,
+        limit=limit,
+        cursor_ts=cursor_dt,
+    )
+
+# ------------- HTTP: Query events by user -------------
+@app.get("/users/{user_id}/events")
+async def get_user_events(
+    user_id: str,              # target user
+    requester_id: str,         # who is querying
+    device_id: Optional[str] = Query(default=None),
+    event_type: Optional[str] = Query(default=None),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor_ts: Optional[str] = Query(default=None),
+):
+    # Users can see their own events
+    if requester_id != user_id:
+        # Otherwise must be owner of the device
+        if not device_id or not has_access(requester_id, device_id, "MANAGE_USERS"):
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    start_dt = datetime.fromisoformat(start) if start else None
+    end_dt = datetime.fromisoformat(end) if end else None
+    cursor_dt = datetime.fromisoformat(cursor_ts) if cursor_ts else None
+
+    return query_events(
+        device_id=device_id,
+        user_id=user_id,
+        event_type=event_type,
+        start=start_dt,
+        end=end_dt,
+        limit=limit,
+        cursor_ts=cursor_dt,
+    )
 
 
 if __name__ == "__main__":
