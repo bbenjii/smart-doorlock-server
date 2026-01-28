@@ -31,7 +31,7 @@ from services.command_service import (
 from typing import Optional
 from services.event_service import query_events
 from services.audit_service import write_audit
-from ws.manager import last_frame_bytes, frame_events, connected_devices, last_status
+from ws.state import last_frame_bytes, frame_events, connected_devices, last_status
 
 app = FastAPI()
 
