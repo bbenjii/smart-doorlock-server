@@ -1,39 +1,22 @@
 import hashlib
-
-import firebase_admin
-from firebase_admin import firestore
-from firebase_admin import credentials
+from typing import Any, List, Literal
 from google.cloud.firestore_v1 import FieldFilter
 from datetime import datetime
 from db import db
+from schemas import Filter
 
-def _hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+def get_user(filters: List[Filter]):
+    query = db.collection("users")
+    for f in filters:
+        query = query.where(filter=FieldFilter(f.key, f.op, f.value))
+    docs = query.limit(1).get()
 
+    if not docs:
+        return None
 
-def authenticate_user(email: str, password: str):
-    password = _hash_password(password)
-    docs = (
-        db.collection("users")
-        .where(filter=FieldFilter("email", "==", email))
-        .where(filter=FieldFilter("password", "==", password))
-        .stream()
-    )
-
-    users = [doc.to_dict() for doc in docs]
-    if not users:
-        return 401, {"error": "User not found"}
-
-    user = users[0]
-    return 200, {
-        "message": "success",
-        "user": {
-            "email": user.get("email"),
-            "firstName": user.get("firstName"),
-            "lastName": user.get("lastName"),
-            "deviceId": user.get("deviceId"),
-        }}
-
+    user = docs[0].to_dict()
+    
+    return user
 
 def create_user(user_data):
     # make sure the user is unique
