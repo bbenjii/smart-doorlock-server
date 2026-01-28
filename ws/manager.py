@@ -96,12 +96,19 @@ async def handle_device_connection(websocket: WebSocket):
 
         connected_devices[device_id] = websocket
         print(f"Device registered: {device_id}")
+        mark_device_online(device_id)
+
+        if device_id in last_status:
+            await broadcast_status(device_id, last_status[device_id])
         
         watchdog = asyncio.create_task(connection_watchdog(websocket, device_id))
         
         # Main loop: now handle both text and binary messages
         while True:
-            if not websocket.client_state == WebSocketState.CONNECTED and websocket.application_state == WebSocketState.CONNECTED:
+            if not (
+                websocket.client_state == WebSocketState.CONNECTED
+                and websocket.application_state == WebSocketState.CONNECTED
+            ):
                 print("WebSocket is already closed.")
 
             message = await websocket.receive()
@@ -129,7 +136,8 @@ async def handle_device_connection(websocket: WebSocket):
         if device_id:
             mark_device_offline(device_id)
 
-        watchdog.cancel()
+        if watchdog:
+            watchdog.cancel()
         print(f"Device unregistered: {device_id}")
 
 

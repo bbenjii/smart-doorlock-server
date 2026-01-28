@@ -15,6 +15,6 @@ async def device_ws(websocket: WebSocket):
 
 # ------------- WebSocket: Mobile clients -------------
 @router.websocket("/client")
-async def device_ws(websocket: WebSocket):
+async def client_ws(websocket: WebSocket):
     await websocket.accept()
     await handle_client_connection(websocket)
