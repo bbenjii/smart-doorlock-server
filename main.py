@@ -6,15 +6,15 @@ from datetime import datetime
 from typing import Dict, Any, Set
 from routers import auth
 import uvicorn
-from fastapi import FastAPI, Body, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from starlette.websockets import WebSocketState
 
-from auth_service import has_access, claim_device
-from event_service import ingest_event
+from services.auth_service import has_access, claim_device
+from services.event_service import ingest_event
 
-from dev_state_service import (
+from services.dev_state_service import (
     mark_device_online,
     mark_device_offline,
     persist_status_update,
@@ -22,15 +22,15 @@ from dev_state_service import (
     get_last_seen,
 )
 
-from command_service import (
+from services.command_service import (
     create_command,
     deliver_command_with_retry,
     mark_command_acknowledged,
 )
 
 from typing import Optional
-from event_service import query_events
-from audit_service import write_audit
+from services.event_service import query_events
+from services.audit_service import write_audit
 
 app = FastAPI()
 
