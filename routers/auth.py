@@ -1,14 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
-from services.users_service import authenticate_user, create_user
-from pydantic import BaseModel
+from services.auth_service import authenticate_user
+from services.users_service import create_user
+from schemas import Credentials
 
 router = APIRouter(prefix="/auth", tags=["users"])
-
-
-class Credentials(BaseModel):
-    username: str
-    password: str
-
 
 # -------------- USER AUTHENTICATION -----------------
 @router.post("/login")

@@ -43,6 +43,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+
 # deviceId -> WebSocket (ESP connections)
 connected_devices: Dict[str, WebSocket] = {}
 
@@ -103,7 +104,7 @@ async def device_ws(websocket: WebSocket):
     device_id = None
     watchdog = None
     try:
-        # First message must still be the JSON "hello"
+        # The first message must still be the JSON "hello"
         hello_text = await websocket.receive_text()
         try:
             hello_json = json.loads(hello_text)
