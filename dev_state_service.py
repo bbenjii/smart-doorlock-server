@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from users_controller import db
+from db import db
 
 def update_device_state(device_id: str, **fields):
     """

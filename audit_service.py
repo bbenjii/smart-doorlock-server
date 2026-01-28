@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, Dict, Any
-from users_controller import db
+from db import db
 
 def write_audit(
     action: str,

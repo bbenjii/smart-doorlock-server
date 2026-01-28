@@ -5,14 +5,11 @@ from firebase_admin import firestore
 from firebase_admin import credentials
 from google.cloud.firestore_v1 import FieldFilter
 from datetime import datetime
-cred = credentials.Certificate("smart-doorlock-project-firebase-adminsdk-fbsvc-035584259e.json")
-app = firebase_admin.initialize_app(cred)
-
-# Application Default credentials are automatically created.
-db = firestore.client()
+from db import db
 
 def _hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
+
 
 def authenticate_user(email: str, password: str):
     password = _hash_password(password)
@@ -37,8 +34,9 @@ def authenticate_user(email: str, password: str):
             "deviceId": user.get("deviceId"),
         }}
 
+
 def create_user(user_data):
-    # make sure user is unique
+    # make sure the user is unique
     email = user_data.get("email")
     docs = (
         db.collection("users")
@@ -52,15 +50,14 @@ def create_user(user_data):
 
     plain_password = user_data.get("password")
     user_data["password"] = _hash_password(plain_password)
-    
+
     now = datetime.now()
     user_data["created_at"] = now
-    
+
     # verify important fields
     if user_data.get("firstName") in [None, ""] or user_data.get("lastName") in [None, ""]:
         return 400, {"error": "Missing first name or last name"}
-        
-        
+
     update_time, user = db.collection("users").add(user_data)
     return 200, {
         "message": "success",
@@ -70,4 +67,3 @@ def create_user(user_data):
             "lastName": user_data.get("lastName"),
             "deviceId": user_data.get("deviceId"),
         }}
-    

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Optional
-from users_controller import db
+from db import db
 
 ROLE_PERMISSIONS = {
     "owner": {

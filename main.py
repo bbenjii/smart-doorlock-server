@@ -4,15 +4,13 @@ import json
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, Any, Set
-
+from routers import auth
 import uvicorn
-from fastapi import FastAPI, Body, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, Body, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from fastapi.responses import Response, StreamingResponse
 from starlette.websockets import WebSocketState
 
-from users_controller import authenticate_user, create_user
 from auth_service import has_access, claim_device
 from event_service import ingest_event
 
@@ -30,7 +28,6 @@ from command_service import (
     mark_command_acknowledged,
 )
 
-from fastapi import Query
 from typing import Optional
 from event_service import query_events
 from audit_service import write_audit
@@ -44,6 +41,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth.router)
 # deviceId -> WebSocket (ESP connections)
 connected_devices: Dict[str, WebSocket] = {}
 
@@ -74,28 +73,6 @@ async def broadcast_status(device_id: str, status_payload: Dict[str, Any]):
         subscribers.discard(ws)
 
 
-
-class Credentials(BaseModel):
-    username: str
-    password: str
-# -------------- USER AUTHENTICATION -----------------
-@app.post("/auth/login")
-async def login(credentials: dict):
-    status_code, result = authenticate_user(email=credentials.get("email"), password=credentials.get("password"))
-    if status_code != 200:
-        raise HTTPException(status_code=status_code, detail=result)
-    return result
-
-@app.post("/auth/signup")
-async def signup(user_data: dict):
-    status_code, result = create_user(user_data)
-    
-    if status_code != 200:
-        raise HTTPException(status_code=status_code, detail=result)
-    
-    return result
-
-
 # ------------- WebSocket: ESP32 devices -------------
 
 async def connection_watchdog(websocket: WebSocket, device_id: str):
@@ -111,7 +88,7 @@ async def connection_watchdog(websocket: WebSocket, device_id: str):
             if not last_seen:
                 continue
 
-            if (datetime.utcnow() - last_seen).seconds > 10:
+            if (datetime.now() - last_seen).seconds > 10:
                 print(f"[{device_id}] Device considered offline (watchdog)")
                 break
 
@@ -346,7 +323,7 @@ async def mjpeg_stream(device_id: str):
 # ------------- HTTP: Send command from mobile -> ESP -------------
 
 @app.post("/send-command/{device_id}/{cmd}")
-async def send_command(device_id: str, cmd: str, user_id: str):
+async def send_command(device_id: str, cmd: str, user_id: str = ""):
     cmd_upper = cmd.upper()
 
     if cmd_upper not in ("LOCK", "UNLOCK", "GET_STATUS"):
