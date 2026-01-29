@@ -4,6 +4,7 @@ from google.cloud.firestore_v1 import FieldFilter
 from datetime import datetime
 from db import db
 from schemas import Filter
+from utils import _hash_password
 
 def get_user(filters: List[Filter]):
     query = db.collection("users")
