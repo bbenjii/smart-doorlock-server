@@ -1,6 +1,10 @@
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional
-from users_controller import db
+from db import db
+from schemas import Filter
+from services.users_service import get_user
+from utils import _hash_password
 
 ROLE_PERMISSIONS = {
     "owner": {
@@ -18,6 +22,26 @@ ROLE_PERMISSIONS = {
     },
 }
 
+def authenticate_user(email: str, password: str):
+    password = _hash_password(password)
+    filters = [
+        Filter(key="email", value=email, op="=="),
+        Filter(key="password", value=password, op="=="),
+    ]
+    user = get_user(filters)
+
+    if not user:
+        return 401, {"error": "User not found"}
+
+    return 200, {
+        "message": "success",
+        "user": {
+            "email": user.get("email"),
+            "firstName": user.get("firstName"),
+            "lastName": user.get("lastName"),
+            "deviceId": user.get("deviceId"),
+        },
+    }
 
 def has_access(
     user_id: str,

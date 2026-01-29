@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta
-from users_controller import db
+from db import db
 
 RETRY_INTERVAL_SECONDS = 3
 MAX_RETRIES = 3

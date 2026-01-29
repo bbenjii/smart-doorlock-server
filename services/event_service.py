@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-from users_controller import db
+from db import db
 from google.cloud.firestore_v1 import FieldFilter
 
 ALLOWED_EVENTS = {
