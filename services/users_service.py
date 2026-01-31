@@ -20,6 +20,7 @@ def validate_email(email: str) -> Tuple[bool, str]:
         return True, "Valid email"
     return False, "Invalid email format"
 
+from utils import _hash_password
 
 def get_user(filters: List[Filter]):
     """Get user by filters (email, id, etc)"""
