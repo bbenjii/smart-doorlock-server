@@ -1,11 +1,13 @@
 import asyncio
 import json
 from datetime import datetime
+from pydoc import text
 from typing import Dict, Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from services.audit_service import write_audit
 from services.command_service import mark_command_acknowledged
 from services.dev_state_service import (
     mark_device_online,
@@ -24,6 +26,9 @@ from ws.state import (
     last_frame_meta,
     frame_events,
 )
+
+from services.notification_service import create_notification, get_notification_recipients, build_notification_message, get_notification_recipients_by_access
+from services.notification_rules import should_notify 
 
 
 async def broadcast_status(device_id: str, status_payload: Dict[str, Any]):
@@ -178,15 +183,51 @@ async def handle_device_text_message(device_id: str, text: str):
             await broadcast_status(device_id, status_payload)
 
     elif msg_type == "event":
+        event_type = data.get("eventType")
+        if not event_type:
+            return
+        actor_user_id = data.get("userId")
+
         ingest_event(
             device_id=device_id,
-            event_type=data.get("eventType"),
-            user_id=data.get("userId"),
+            event_type=event_type,
+            user_id=actor_user_id,
             auth_method=data.get("authMethod"),
         )
-    else:
-        print(f"Unknown/unused message from {device_id}: {text}")
 
+        should_send, required_access_level = should_notify(
+            device_id=device_id,
+            event_type=event_type,
+            payload=data,
+        )
+
+        if should_send:
+            recipients = [
+                uid for uid in get_notification_recipients_by_access(device_id, required_access_level)
+                if uid != actor_user_id
+            ]
+            if recipients:
+                create_notification(
+                    device_id=device_id,
+                    user_ids=recipients,
+                    notif_type=event_type,
+                    message=build_notification_message(event_type, data),
+                    data=data,
+                )
+                write_audit(
+                action="NOTIFICATION_SENT",
+                actor_user_id=None,
+                device_id=device_id,
+                status="SUCCESS",
+                details={
+                "type": event_type,
+                "userCount": len(recipients),
+                    },
+                )
+        else:
+            print(f"Notification not enabled for event type {event_type} on device {device_id}")
+
+ 
 
 async def handle_device_binary_message(device_id: str, binary: bytes):
     last_frame_bytes[device_id] = binary
