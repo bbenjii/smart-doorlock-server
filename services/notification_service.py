@@ -191,3 +191,12 @@ def get_notification_recipients_by_access(device_id: str, access_level: Optional
             user_ids.append(uid)
     
     return list(set(user_ids))
+
+def should_user_receive_notification(user_id: str, device_id: str, event_type: str) -> bool:
+    doc = db.collection("userPreferences").document(f"{user_id}_{device_id}").get()
+    if not doc.exists:
+        return True  
+    
+    prefs = doc.to_dict() or {}
+    enabled_events = prefs.get("enabledNotifications", [])
+    return event_type in enabled_events

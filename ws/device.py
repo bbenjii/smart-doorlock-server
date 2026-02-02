@@ -206,6 +206,10 @@ async def handle_device_text_message(device_id: str, text: str):
                 uid for uid in get_notification_recipients_by_access(device_id, required_access_level)
                 if uid != actor_user_id
             ]
+            recipients = [
+                uid for uid in recipients
+                if should_user_receive_notification(uid, device_id, event_type)
+            ]
             if recipients:
                 create_notification(
                     device_id=device_id,

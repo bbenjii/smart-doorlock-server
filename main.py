@@ -4,7 +4,7 @@ import json
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, Any, Set
-from routers import auth, websockets
+from routers import auth, websockets, notifications
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
