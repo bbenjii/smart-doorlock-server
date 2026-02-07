@@ -17,6 +17,7 @@ from services.dev_state_service import (
     get_last_seen,
 )
 from services.event_service import ingest_event
+from services.media_service import store_media_bytes
 
 from ws.state import (
     connected_devices,
@@ -25,7 +26,9 @@ from ws.state import (
     last_frame_bytes,
     last_frame_meta,
     frame_events,
+    pending_media_event,
 )
+from services.cache_service import set_latest_frame
 
 from services.notification_service import create_notification, get_notification_recipients, build_notification_message, get_notification_recipients_by_access
 from services.notification_rules import should_notify 
@@ -188,12 +191,18 @@ async def handle_device_text_message(device_id: str, text: str):
             return
         actor_user_id = data.get("userId")
 
-        ingest_event(
+        # persist the event and keep the returned event id so that
+        # a following binary frame can be linked to it
+        event_id = ingest_event(
             device_id=device_id,
             event_type=event_type,
             user_id=actor_user_id,
             auth_method=data.get("authMethod"),
+            metadata=data.get("metadata"),
         )
+
+        # track that the next incoming binary from this device is media for this event
+        pending_media_event[device_id] = event_id
 
         should_send, required_access_level = should_notify(
             device_id=device_id,
@@ -234,10 +243,40 @@ async def handle_device_text_message(device_id: str, text: str):
  
 
 async def handle_device_binary_message(device_id: str, binary: bytes):
+    # keep an in-memory last frame for streaming
     last_frame_bytes[device_id] = binary
     last_frame_meta[device_id] = {
         "timestamp": asyncio.get_event_loop().time()
     }
+    # store latest frame in Redis cache for fast retrieval by mobile clients
+    try:
+        set_latest_frame(device_id, binary, meta={"timestamp": last_frame_meta[device_id]["timestamp"]}, ttl=60)
+    except Exception as e:
+        print(f"Failed to write latest frame to Redis for {device_id}: {e}")
+
+    # If there's a pending event waiting for media, persist it
+    event_id = pending_media_event.get(device_id)
+    if event_id:
+        try:
+            res = store_media_bytes(device_id=device_id, event_id=event_id, data=binary)
+            write_audit(
+                action="MEDIA_STORED",
+                actor_user_id=None,
+                device_id=device_id,
+                status="SUCCESS",
+                details={"mediaId": res.get("mediaId"), "eventId": event_id},
+            )
+        except Exception as e:
+            write_audit(
+                action="MEDIA_STORED",
+                actor_user_id=None,
+                device_id=device_id,
+                status="FAILED",
+                details={"error": str(e), "eventId": event_id},
+            )
+        finally:
+            # clear pending marker after first fragment stored
+            pending_media_event[device_id] = None
 
     # notify any waiting stream
     if device_id not in frame_events:

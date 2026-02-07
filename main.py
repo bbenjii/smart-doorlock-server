@@ -4,7 +4,7 @@ import json
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, Any, Set
-from routers import auth, websockets, notifications
+from routers import auth, websockets, notifications, media
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +32,7 @@ from typing import Optional
 from services.event_service import query_events
 from services.audit_service import write_audit
 from ws.state import last_frame_bytes, frame_events, connected_devices, last_status
+from services.cache_service import get_latest_frame
 
 app = FastAPI()
 
@@ -45,10 +46,20 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(websockets.router)
+app.include_router(media.router)
 
 
 @app.get("/camera/{device_id}/snapshot")
 async def get_snapshot(device_id: str):
+    # try Redis cache first for low-latency retrieval
+    try:
+        frame, meta = get_latest_frame(device_id)
+        if frame:
+            return Response(content=frame, media_type="image/jpeg")
+    except Exception:
+        # fall back to in-memory cache
+        pass
+
     frame = last_frame_bytes.get(device_id)
     if not frame:
         raise HTTPException(status_code=404, detail="No frame for this device")

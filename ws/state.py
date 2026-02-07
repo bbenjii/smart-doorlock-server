@@ -1,4 +1,4 @@
-from typing import Dict, Any, Set
+from typing import Dict, Any, Set, Optional
 from collections import defaultdict
 import asyncio
 from fastapi import WebSocket
@@ -15,3 +15,5 @@ last_status: Dict[str, Dict[str, Any]] = {}
 last_frame_bytes: Dict[str, bytes] = {}
 last_frame_meta: Dict[str, Any] = {}
 frame_events: Dict[str, asyncio.Event] = {}
+# deviceId -> eventId for which we expect a media fragment to arrive next
+pending_media_event: Dict[str, Optional[str]] = {}
