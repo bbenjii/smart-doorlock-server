@@ -6,13 +6,14 @@ from datetime import datetime
 from typing import Dict, Any, Set
 from routers import auth, websockets, notifications, media
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from starlette.websockets import WebSocketState
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
+from routers.auth import get_current_user
 from services.auth_service import has_access, claim_device
 from services.event_service import ingest_event
 
@@ -63,10 +64,15 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(websockets.router)
 app.include_router(media.router)
-
+app.include_router(notifications.router)
 
 @app.get("/camera/{device_id}/snapshot")
-async def get_snapshot(device_id: str):
+async def get_snapshot(device_id: str, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["user_id"]
+
+    if not has_access(user_id, device_id, "GET_STATUS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     # try Redis cache first for low-latency retrieval
     try:
         frame, meta = get_latest_frame(device_id)
@@ -84,7 +90,7 @@ async def get_snapshot(device_id: str):
 BOUNDARY = "frameboundary123456"
 
 @app.get("/camera/{device_id}/stream")
-async def mjpeg_stream(device_id: str):
+async def mjpeg_stream(device_id: str, current_user: dict = Depends(get_current_user)):
     if device_id not in frame_events:
         frame_events[device_id] = asyncio.Event()
 
@@ -114,23 +120,23 @@ async def mjpeg_stream(device_id: str):
 # ------------- HTTP: Send command from mobile -> ESP -------------
 
 @app.post("/send-command/{device_id}/{cmd}")
-async def send_command(device_id: str, cmd: str, user_id: str = ""):
+async def send_command(device_id: str, cmd: str, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["user_id"]
     cmd_upper = cmd.upper()
 
     if cmd_upper not in ("LOCK", "UNLOCK", "GET_STATUS"):
         return {"ok": False, "error": "Invalid command"}
 
-    
-    # if not has_access(user_id, device_id, cmd_upper):
-    #     write_audit(
-    #         action="COMMAND_DENIED",
-    #         actor_user_id=user_id,
-    #         device_id=device_id,
-    #         status="DENIED",
-    #         details={"command": cmd_upper},
-    #     )
-    #     raise HTTPException(status_code=403, detail="Access denied")
-    # 
+    if not has_access(user_id, device_id, cmd_upper):
+        write_audit(
+            action="COMMAND_DENIED",
+            actor_user_id=user_id,
+            device_id=device_id,
+            status="DENIED",
+            details={"command": cmd_upper},
+        )
+        raise HTTPException(status_code=403, detail="Access denied")
+
     write_audit(
         action="COMMAND_ISSUED",
         actor_user_id=user_id,
@@ -140,21 +146,20 @@ async def send_command(device_id: str, cmd: str, user_id: str = ""):
     )
 
     ws = connected_devices.get(device_id)
-    devices = connected_devices
-    
+
     if not ws:
         return {"ok": False, "error": "Device not connected"}
 
     command_id = create_command(device_id, user_id, cmd_upper)
 
     asyncio.create_task(
-    deliver_command_with_retry(
-        command_id,
-        device_id,
-        cmd_upper,
-        connected_devices,
+        deliver_command_with_retry(
+            command_id,
+            device_id,
+            cmd_upper,
+            connected_devices,
         )
-    )   
+    )
 
     return {"ok": True, "commandId": command_id}
 
@@ -162,12 +167,12 @@ async def send_command(device_id: str, cmd: str, user_id: str = ""):
 # ------------- HTTP: Claim device ---------------------
 
 @app.post("/devices/{device_id}/claim")
-async def claim(device_id: str, body: dict):
-    user_id = body.get("userId")
+async def claim(device_id: str, body: dict, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["user_id"]
     pairing_code = body.get("pairingCode")
 
-    if not user_id or not pairing_code:
-        raise HTTPException(status_code=400, detail="Missing userId or pairingCode")
+    if not pairing_code:
+        raise HTTPException(status_code=400, detail="Missing pairingCode")
 
     ok, msg = claim_device(user_id, device_id, pairing_code)
 
@@ -192,9 +197,13 @@ async def claim(device_id: str, body: dict):
 # ------------- HTTP: Get last known status -------------
 
 @app.get("/status/{device_id}")
-async def get_status(device_id: str):
+async def get_status(device_id: str, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["user_id"]
+
+    if not has_access(user_id, device_id, "GET_STATUS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
     data = last_status.get(device_id)
-    print(connected_devices)
     if not data:
         return {"deviceId": device_id, "status": None, "online": device_id in connected_devices}
     return {**data, "online": device_id in connected_devices}
@@ -204,7 +213,7 @@ async def get_status(device_id: str):
 @app.get("/devices/{device_id}/events")
 async def get_device_events(
     device_id: str,
-    requester_id: str,  
+    current_user: dict = Depends(get_current_user),
     user_id: Optional[str] = Query(default=None),
     event_type: Optional[str] = Query(default=None),
     start: Optional[str] = Query(default=None),
@@ -212,6 +221,7 @@ async def get_device_events(
     limit: int = Query(default=50, ge=1, le=200),
     cursor_ts: Optional[str] = Query(default=None),
 ):
+    requester_id = current_user["user_id"]
 
     if not has_access(requester_id, device_id, "GET_STATUS"):
         raise HTTPException(status_code=403, detail="Access denied")
@@ -234,7 +244,7 @@ async def get_device_events(
 @app.get("/users/{user_id}/events")
 async def get_user_events(
     user_id: str,              # target user
-    requester_id: str,         # who is querying
+    current_user: dict = Depends(get_current_user),
     device_id: Optional[str] = Query(default=None),
     event_type: Optional[str] = Query(default=None),
     start: Optional[str] = Query(default=None),
@@ -242,6 +252,8 @@ async def get_user_events(
     limit: int = Query(default=50, ge=1, le=200),
     cursor_ts: Optional[str] = Query(default=None),
 ):
+    requester_id = current_user["user_id"]
+
     # Users can see their own events
     if requester_id != user_id:
         # Otherwise must be owner of the device

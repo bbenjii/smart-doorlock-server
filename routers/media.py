@@ -1,12 +1,13 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import FileResponse
 from db import db
+from routers.auth import get_current_user
 import os
 
 router = APIRouter(prefix="/media", tags=["media"])
 
 @router.get("/{media_id}")
-async def get_media_meta(media_id: str, source: str = "auto"):
+async def get_media_meta(media_id: str, source: str = "auto", current_user: dict = Depends(get_current_user)):
 
     doc = db.collection("media").document(media_id).get()
     if not doc.exists:
