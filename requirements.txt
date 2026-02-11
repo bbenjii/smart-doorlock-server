@@ -9,3 +9,5 @@ PyJWT
 python-multipart
 slowapi
 email-validator
+redis
+Pillow

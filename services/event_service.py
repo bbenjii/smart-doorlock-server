@@ -42,8 +42,10 @@ def ingest_event(
         "timestamp": datetime.utcnow(),
     }
 
-    db.collection("events").add(doc)
-    return True
+    # Persist event and return its id so callers can link media
+    doc_ref = db.collection("events").document()
+    doc_ref.set(doc)
+    return doc_ref.id
 
 
 def query_events(
