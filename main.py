@@ -10,6 +10,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Quer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from starlette.websockets import WebSocketState
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from services.auth_service import has_access, claim_device
 from services.event_service import ingest_event
@@ -32,9 +34,23 @@ from typing import Optional
 from services.event_service import query_events
 from services.audit_service import write_audit
 from ws.state import last_frame_bytes, frame_events, connected_devices, last_status
+from slowapi.errors import RateLimitExceeded
+from fastapi.responses import JSONResponse
 from services.cache_service import get_latest_frame
 
 app = FastAPI()
+
+# Configure rate limiting
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+# Add rate limit error handler
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request, exc):
+    return JSONResponse(
+        status_code=429,
+        content={"error": "Too many requests. Please try again later."}
+    )
 
 app.add_middleware(
     CORSMiddleware,

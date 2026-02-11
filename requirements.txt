@@ -4,5 +4,10 @@ firebase-admin
 google-cloud-firestore
 uvicorn[standard]
 gunicorn
+bcrypt
+PyJWT
+python-multipart
+slowapi
+email-validator
 redis
 Pillow
