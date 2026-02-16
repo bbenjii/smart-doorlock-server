@@ -8,7 +8,13 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 _r = redis.from_url(REDIS_URL)
 
-
+try:
+    _r.ping()
+    print("Redis connected")
+except Exception as e:
+    print(f"Redis connection failed: {e}")
+    
+    
 def set_latest_frame(device_id: str, data: bytes, meta: Optional[Dict[str, Any]] = None, ttl: int = 60):
     """Store latest frame bytes and optional metadata in Redis with TTL (seconds)."""
     if not device_id or data is None:
