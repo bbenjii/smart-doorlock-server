@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Header
+from typing import Optional
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from services.auth_service import (
@@ -30,7 +31,13 @@ limiter = Limiter(key_func=get_remote_address)
 
 # EXTRACT AND VERIFY TOKEN FROM AUTHORIZATION HEADER
 # Expected format: "Bearer <token>"
-def get_current_user(authorization: str = Header(..., alias="Authorization")):
+def get_current_user(authorization: Optional[str] = Header(None, alias="Authorization")):
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Authorization header. Expected: Bearer <token>",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     try:
         scheme, token = authorization.split(" ", 1)

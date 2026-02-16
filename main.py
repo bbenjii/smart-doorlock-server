@@ -199,9 +199,11 @@ async def claim(device_id: str, body: dict, current_user: dict = Depends(get_cur
 # ------------- HTTP: Get last known status -------------
 
 @app.get("/status/{device_id}")
-async def get_status(device_id: str, current_user: dict = Depends(get_current_user)):
+async def get_status(
+    device_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     user_id = current_user["user_id"]
-
     if not has_access(user_id, device_id, "GET_STATUS"):
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -275,7 +277,6 @@ async def get_user_events(
         limit=limit,
         cursor_ts=cursor_dt,
     )
-
 
 if __name__ == "__main__":
     uvicorn.run(app, host='0.0.0.0', port=8000)

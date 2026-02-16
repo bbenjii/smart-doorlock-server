@@ -30,7 +30,8 @@ from ws.state import (
 )
 from services.cache_service import set_latest_frame
 
-from services.notification_service import create_notification, get_notification_recipients, build_notification_message, get_notification_recipients_by_access
+from services.notification_service import create_notification, get_notification_recipients, build_notification_message, \
+    get_notification_recipients_by_access, should_user_receive_notification
 from services.notification_rules import should_notify 
 
 
@@ -119,7 +120,7 @@ async def handle_device_connection(websocket: WebSocket):
 
             text = message.get("text")
             binary = message.get("bytes")
-
+            
             if text is not None:
                 await handle_device_text_message(device_id, text)
             elif binary is not None:
