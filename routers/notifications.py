@@ -99,5 +99,5 @@ async def get_notification_preferences(device_id: str, current_user: dict = Depe
     prefs_doc_id = f"{user_id}_{device_id}"
     doc = db.collection("userPreferences").document(prefs_doc_id).get()
     if not doc.exists:
-        return {"enabledNotifications": ["FORCED_ENTRY", "FAILED_AUTH", "BATTERY_LOW", "DEVICE_OFFLINE"]}
+        return {"enabledNotifications": ["FORCED_ENTRY", "FAILED_AUTH", "BATTERY_LOW", "DEVICE_OFFLINE", "DOORBELL_PRESSED", "WINDOW_SENSOR_TRIGGERED"]}
     return doc.to_dict()

@@ -160,6 +160,13 @@ def build_notification_message(event_type: str, payload: dict) -> str:
     if event_type == "DEVICE_OFFLINE":
         return "Device is offline"
 
+    if event_type == "DOORBELL_PRESSED":
+        return "Someone is at your door"
+
+    if event_type == "WINDOW_SENSOR_TRIGGERED":
+        location = payload.get("location", "Unknown")
+        return f"Window sensor triggered – {location}"
+
     return f"Event detected: {event_type}"
 
 def recent_notification_exists(device_id: str, event_type: str, since: datetime) -> bool:

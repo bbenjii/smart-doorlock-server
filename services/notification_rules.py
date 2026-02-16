@@ -12,6 +12,7 @@ RULE_COOLDOWNS = {
 CRITICAL_EVENTS = {
     "FORCED_ENTRY",
     "FAILED_AUTH",
+    "DOORBELL_PRESSED",
 }
 
 def should_notify(
