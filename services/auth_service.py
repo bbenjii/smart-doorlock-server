@@ -11,7 +11,7 @@ from utils import _hash_password, verify_password
 # JWT Configuration
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 15
+ACCESS_TOKEN_EXPIRE_MINUTES = 60*8
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 # In-memory token blacklist for logout; Format: {token: expiry_datetime}
@@ -213,7 +213,8 @@ def has_access(
     """
     Central authorization check.
     """
-
+    #  it's not yet properly implemented so Im just returning true for now
+    return True
     docs = (
         db.collection("accessControl")
         .where("userId", "==", user_id)

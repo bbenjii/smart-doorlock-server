@@ -1,84 +1,130 @@
-# Smart Lock – Backend Server
+# Smart Lock Backend Server
 
-This directory contains the backend server for the **Smart Lock** project.  
-The server is responsible for handling API requests, WebSocket connections, and communication with smart lock devices and the mobile app.
+Backend API and WebSocket server for the Smart Lock system.
 
----
+This service handles:
+- user authentication and token lifecycle
+- device command dispatch (`LOCK`, `UNLOCK`, `GET_STATUS`)
+- device and user WebSocket connections
+- Firestore persistence (users, events, notifications, credentials, settings)
+- media metadata persistence and local media file storage
+- FCM push notification delivery
+
+## Tech Stack
+
+- Python 3.10+
+- FastAPI + Uvicorn/Gunicorn
+- Firebase Admin SDK
+- Google Cloud Firestore
+- Redis (latest camera frame cache)
+
+## Project Structure
+
+- `main.py`: FastAPI app, HTTP endpoints, router registration
+- `routers/`: REST routes (`auth`, `notifications`, `settings`, `credentials`, `media`, `websockets`)
+- `ws/`: device/client WebSocket session handling
+- `services/`: business logic for auth, commands, events, notifications, settings, media
+- `db/`: Firestore initialization and exported DB client
+- `schemas/`: Pydantic request/response models
 
 ## Prerequisites
 
-Make sure you have the following installed:
+- Python 3.10+
+- `pip`
+- Firebase project with Firestore enabled
+- Redis instance (optional but recommended)
 
-- Python 3.10+ (recommended)
-- pip
-- virtualenv support (included with Python)
+## Configuration
 
----
+The server currently expects these runtime values:
 
-## Backend Setup
+- `JWT_SECRET_KEY`: secret used to sign/verify JWTs
+- `REDIS_URL`: Redis connection string (default: `redis://localhost:6379/0`)
+- `FIREBASE_SERVICE_ACCOUNT_PATH` (optional for local dev): path to Firebase service-account JSON
 
-### 1. Create a virtual environment
+Important:
+- `db/database.py` initializes Firebase using this order:
+- `FIREBASE_SERVICE_ACCOUNT_PATH`
+- `GOOGLE_APPLICATION_CREDENTIALS`
+- Application Default Credentials (recommended for Cloud Run)
+- Avoid committing service-account JSON keys to git.
 
-From the backend project root:
+## Local Development Setup
+
+1. Create a virtual environment:
 
 ```bash
 python -m venv .venv
-````
+```
 
----
-
-### 2. Activate the virtual environment
-
-**macOS / Linux**
+2. Activate the environment:
 
 ```bash
 source .venv/bin/activate
 ```
 
-**Windows (PowerShell)**
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
----
-
-### 3. Install dependencies
-
-With the virtual environment activated:
+3. Install dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
----
-
-## Running the Server
-
-Once dependencies are installed, start the server using the appropriate entry point (for example with FastAPI + Uvicorn):
+4. Start the API:
 
 ```bash
 python main.py
 ```
 
----
+Server defaults:
+- Base URL: `http://localhost:8000`
+- OpenAPI docs: `http://localhost:8000/docs`
 
-## Notes
+## API Surface (High Level)
 
-* Always activate the virtual environment before running the server.
-* If the mobile app is running on a physical device, make sure the server is bound to your local IP.
-* The backend URL should match the `EXPO_PUBLIC_API_URL` value used by the mobile app, "http://<your-computer-ip>:8000".
+- Auth routes: `/auth/*`
+- Settings routes: `/settings/*`
+- Credential routes: `/credentials/*`
+- Notification routes: `/notifications/*`
+- Media routes: `/media/*`
+- Device command route: `/send-command/{device_id}/{cmd}`
+- Device status route: `/status/{device_id}`
+- Event query routes: `/devices/{device_id}/events`, `/users/{user_id}/events`
 
----
+## WebSocket Endpoints
 
-## Project Context
+- Device channel: `ws://<host>/ws/device`
+- First message must be JSON with `{"type":"hello","deviceId":"..."}`
+- Client channel: `ws://<host>/ws/client`
+- First message must be JSON with `{"type":"subscribe","deviceId":"..."}`
 
-This backend is part of the **Smart Lock** system and works together with:
+## Docker
 
-* The React Native mobile app
-* The Smart Lock hardware devices
+Build image:
 
+```bash
+docker build -t smart-doorlock-server .
+```
 
----
+Run container:
 
+```bash
+docker run --rm -p 8080:8080 \
+  -e JWT_SECRET_KEY="replace-me" \
+  -e REDIS_URL="redis://host.docker.internal:6379/0" \
+  smart-doorlock-server
+```
 
+Container defaults:
+- App listens on `PORT` env var, fallback `8080`
+- Uses `gunicorn` + `uvicorn` worker
+- Default worker count is `1` (`WEB_CONCURRENCY` can override)
+
+## Firebase Deployment Direction
+
+For this codebase (FastAPI + WebSockets), deploy on Cloud Run and optionally expose via Firebase Hosting rewrite.
+
+## Security Notes
+
+- Rotate and remove committed service-account JSON keys.
+- Set a strong `JWT_SECRET_KEY` in production.
+- Restrict CORS in `main.py` before production rollout.
