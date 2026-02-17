@@ -1,0 +1,11 @@
+.git
+.gitignore
+.idea
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+media
+smart-doorlock-project-firebase-adminsdk-fbsvc-035584259e.json
