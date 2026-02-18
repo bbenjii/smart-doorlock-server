@@ -1,6 +1,7 @@
 # server.py
 import asyncio
 import json
+import traceback
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, Any, Set
@@ -33,7 +34,7 @@ from services.command_service import (
 
 from typing import Optional
 from services.event_service import query_events
-from services.audit_service import write_audit
+from services.audit_service import write_audit, query_audit_logs
 from ws.state import last_frame_bytes, frame_events, connected_devices, last_status
 from slowapi.errors import RateLimitExceeded
 from fastapi.responses import JSONResponse
@@ -234,15 +235,51 @@ async def get_device_events(
     end_dt = datetime.fromisoformat(end) if end else None
     cursor_dt = datetime.fromisoformat(cursor_ts) if cursor_ts else None
 
-    return query_events(
-        device_id=device_id,
-        user_id=user_id,
-        event_type=event_type,
-        start=start_dt,
-        end=end_dt,
-        limit=limit,
-        cursor_ts=cursor_dt,
-    )
+    try:
+        return query_events(
+            device_id=device_id,
+            user_id=user_id,
+            event_type=event_type,
+            start=start_dt,
+            end=end_dt,
+            limit=limit,
+            cursor_ts=cursor_dt,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"EVENT_QUERY_FAILED: {type(e).__name__}: {str(e)}",
+        )
+
+
+# ------------- HTTP: Query audit logs -------------
+@app.get("/devices/{device_id}/logs")
+async def get_device_logs(
+    device_id: str,
+    current_user: dict = Depends(get_current_user),
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor_ts: Optional[str] = Query(default=None),
+):
+    requester_id = current_user["user_id"]
+
+    if not has_access(requester_id, device_id, "GET_STATUS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    cursor_dt = datetime.fromisoformat(cursor_ts) if cursor_ts else None
+
+    try:
+        return query_audit_logs(
+            device_id=device_id,
+            limit=limit,
+            cursor_ts=cursor_dt,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"AUDIT_QUERY_FAILED: {type(e).__name__}: {str(e)}",
+        )
 
 # ------------- HTTP: Query events by user -------------
 @app.get("/users/{user_id}/events")
@@ -268,15 +305,22 @@ async def get_user_events(
     end_dt = datetime.fromisoformat(end) if end else None
     cursor_dt = datetime.fromisoformat(cursor_ts) if cursor_ts else None
 
-    return query_events(
-        device_id=device_id,
-        user_id=user_id,
-        event_type=event_type,
-        start=start_dt,
-        end=end_dt,
-        limit=limit,
-        cursor_ts=cursor_dt,
-    )
+    try:
+        return query_events(
+            device_id=device_id,
+            user_id=user_id,
+            event_type=event_type,
+            start=start_dt,
+            end=end_dt,
+            limit=limit,
+            cursor_ts=cursor_dt,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"USER_EVENT_QUERY_FAILED: {type(e).__name__}: {str(e)}",
+        )
 
 if __name__ == "__main__":
     uvicorn.run(app, host='0.0.0.0', port=8000)
