@@ -2,6 +2,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 
 from db import db
+from utils import hash_password
+from utils import verify_password
 
 VALID_AUTH_METHODS = {"face", "fingerprint", "keypad", "bluetooth"}
 
@@ -18,7 +20,7 @@ def get_credentials(user_id: str) -> Dict[str, Any]:
 
     data = doc.to_dict() or {}
     data["userId"] = user_id
-    return data
+    return _sanitize_credentials_for_client(data)
 
 
 def enroll_method(
@@ -34,8 +36,29 @@ def enroll_method(
 
     doc_ref = db.collection("authCredentials").document(user_id)
     now = datetime.utcnow()
-
     existing = doc_ref.get()
+
+    # Keypad:
+    # - if a hashed PIN already exists, this endpoint may re-activate keypad without resetting the PIN.
+    # - if no hashed PIN exists yet, force use of set_keypad_code for secure enrollment.
+    if method == "keypad":
+        if not existing.exists:
+            return False, "No keypad code found. Set a keypad PIN first."
+
+        existing_data = existing.to_dict() or {}
+        keypad_data = (
+            ((existing_data.get("authMethods") or {}).get("keypad") or {}).get("data") or {}
+        )
+        if not keypad_data.get("hashedPin"):
+            return False, "No keypad code found. Set a keypad PIN first."
+
+        doc_ref.update({
+            "authMethods.keypad.isActive": True,
+            "authMethods.keypad.enrolledAt": now,
+            "isActive": True,
+            "updatedAt": now,
+        })
+        return True, "keypad enrolled"
 
     if existing.exists:
         doc_ref.update({
@@ -61,6 +84,57 @@ def enroll_method(
         })
 
     return True, f"{method} enrolled"
+
+
+def set_keypad_code(user_id: str, keypad_code: str) -> Tuple[bool, str]:
+    """
+    Securely enroll/update keypad code using bcrypt hashing.
+    The plaintext code is never stored.
+    """
+    if not keypad_code or not keypad_code.isdigit():
+        return False, "Keypad code must contain digits only"
+    if len(keypad_code) < 4 or len(keypad_code) > 8:
+        return False, "Keypad code must be 4 to 8 digits"
+
+    doc_ref = db.collection("authCredentials").document(user_id)
+    now = datetime.utcnow()
+    hashed_pin = hash_password(keypad_code)
+
+    payload = {
+        f"authMethods.keypad.isActive": True,
+        f"authMethods.keypad.data": {
+            "hashedPin": hashed_pin,
+            "length": len(keypad_code),
+            "updatedAt": now,
+        },
+        f"authMethods.keypad.enrolledAt": now,
+        "isActive": True,
+        "updatedAt": now,
+    }
+
+    existing = doc_ref.get()
+    if existing.exists:
+        doc_ref.update(payload)
+    else:
+        doc_ref.set({
+            "userId": user_id,
+            "authMethods": {
+                "keypad": {
+                    "isActive": True,
+                    "data": {
+                        "hashedPin": hashed_pin,
+                        "length": len(keypad_code),
+                        "updatedAt": now,
+                    },
+                    "enrolledAt": now,
+                }
+            },
+            "isActive": True,
+            "createdAt": now,
+            "updatedAt": now,
+        })
+
+    return True, "Keypad code updated"
 
 
 def revoke_method(user_id: str, method: str) -> Tuple[bool, str]:
@@ -176,9 +250,148 @@ def get_device_credentials(device_id: str) -> List[Dict[str, Any]]:
     return results
 
 
+def get_device_keypad_pins_count(device_id: str) -> int:
+    """
+    Count active keypad credentials for users related to this device.
+    Tries accessControl first; falls back to users.deviceId mapping.
+    """
+    user_ids: set[str] = set()
+
+    access_docs = list(
+        db.collection("accessControl")
+        .where("deviceId", "==", device_id)
+        .where("enabled", "==", True)
+        .stream()
+    )
+    for access_doc in access_docs:
+        access = access_doc.to_dict() or {}
+        uid = access.get("userId")
+        if uid:
+            user_ids.add(uid)
+
+    if not user_ids:
+        owner_docs = list(
+            db.collection("users")
+            .where("deviceId", "==", device_id)
+            .stream()
+        )
+        for d in owner_docs:
+            user_ids.add(d.id)
+
+    count = 0
+    for uid in user_ids:
+        cred_doc = db.collection("authCredentials").document(uid).get()
+        if not cred_doc.exists:
+            continue
+        cred = cred_doc.to_dict() or {}
+        keypad = ((cred.get("authMethods") or {}).get("keypad") or {})
+        keypad_data = keypad.get("data") or {}
+        if keypad.get("isActive", False) and bool(keypad_data.get("hashedPin")):
+            count += 1
+
+    return count
+
+
+def verify_device_keypad_code(
+    device_id: str,
+    code: str,
+) -> Tuple[bool, Optional[str], str]:
+    """
+    Verify an entered keypad code against active keypad credentials
+    for users that currently have keypad access to the device.
+    Returns (is_valid, matched_user_id, message).
+    """
+    if not code or not code.isdigit():
+        return False, None, "Invalid code format"
+
+    access_docs = list(
+        db.collection("accessControl")
+        .where("deviceId", "==", device_id)
+        .where("enabled", "==", True)
+        .stream()
+    )
+
+    candidate_user_ids: List[str] = []
+    for access_doc in access_docs:
+        access = access_doc.to_dict() or {}
+        uid = access.get("userId")
+        access_methods = access.get("accessMethods", None)
+        # Backwards-compatible behavior:
+        # - if accessMethods is missing/empty, still allow keypad verification for this user
+        # - if accessMethods is present, require keypad membership
+        if not uid:
+            continue
+        if access_methods is None:
+            candidate_user_ids.append(uid)
+            continue
+        methods_set = set(access_methods)
+        if not methods_set or "keypad" in methods_set:
+            candidate_user_ids.append(uid)
+
+    if not candidate_user_ids:
+        # Owner bypass fallback:
+        # If accessControl is not set up yet, allow verification against
+        # owner-like users bound to this device via users.deviceId.
+        owner_docs = list(
+            db.collection("users")
+            .where("deviceId", "==", device_id)
+            .limit(1)
+            .stream()
+        )
+        if owner_docs:
+            candidate_user_ids.append(owner_docs[0].id)
+        else:
+            return False, None, "No keypad-enabled users for this device"
+
+    for uid in candidate_user_ids:
+        cred_doc = db.collection("authCredentials").document(uid).get()
+        if not cred_doc.exists:
+            continue
+
+        cred = cred_doc.to_dict() or {}
+        if not cred.get("isActive", False):
+            continue
+
+        keypad = (cred.get("authMethods", {}) or {}).get("keypad", {}) or {}
+        if not keypad.get("isActive", False):
+            continue
+
+        keypad_data = keypad.get("data", {}) or {}
+        hashed_pin = keypad_data.get("hashedPin")
+        if not hashed_pin:
+            continue
+
+        if verify_password(code, hashed_pin):
+            return True, uid, "Keypad code verified"
+
+    return False, None, "Invalid keypad code"
+
+
 def _empty_credentials(user_id: str) -> Dict[str, Any]:
     return {
         "userId": user_id,
         "authMethods": {},
         "isActive": False,
     }
+
+
+def _sanitize_credentials_for_client(record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Remove sensitive material (e.g. keypad hash) from user-facing API responses.
+    """
+    safe = {**record}
+    methods = safe.get("authMethods", {}) or {}
+    sanitized_methods: Dict[str, Any] = {}
+
+    for method_name, method_data in methods.items():
+        entry = dict(method_data or {})
+        if method_name == "keypad":
+            raw_data = entry.get("data") or {}
+            entry["data"] = {
+                "hasCode": bool(raw_data.get("hashedPin")),
+                "length": raw_data.get("length"),
+            }
+        sanitized_methods[method_name] = entry
+
+    safe["authMethods"] = sanitized_methods
+    return safe

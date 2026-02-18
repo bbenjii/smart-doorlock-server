@@ -33,6 +33,7 @@ from services.cache_service import set_latest_frame
 from services.notification_service import create_notification, get_notification_recipients, build_notification_message, \
     get_notification_recipients_by_access, should_user_receive_notification
 from services.notification_rules import should_notify 
+from services.credentials_service import verify_device_keypad_code
 
 
 async def broadcast_status(device_id: str, status_payload: Dict[str, Any]):
@@ -122,7 +123,7 @@ async def handle_device_connection(websocket: WebSocket):
             binary = message.get("bytes")
             
             if text is not None:
-                await handle_device_text_message(device_id, text)
+                await handle_device_text_message(device_id, text, websocket)
             elif binary is not None:
                 await handle_device_binary_message(device_id, binary)
 
@@ -142,7 +143,7 @@ async def handle_device_connection(websocket: WebSocket):
         print(f"Device unregistered: {device_id}")
 
 
-async def handle_device_text_message(device_id: str, text: str):
+async def handle_device_text_message(device_id: str, text: str, websocket: WebSocket):
     print(f"[{device_id}] (text) -> {text}")
     try:
         data = json.loads(text)
@@ -240,6 +241,27 @@ async def handle_device_text_message(device_id: str, text: str):
                 )
         else:
             print(f"Notification not enabled for event type {event_type} on device {device_id}")
+
+    elif msg_type == "keypad_verify":
+        code = data.get("code")
+        is_valid, matched_user_id, msg = verify_device_keypad_code(device_id, code)
+
+        await websocket.send_json({
+            "type": "keypad_verify_result",
+            "deviceId": device_id,
+            "ok": is_valid,
+            "matchedUserId": matched_user_id,
+            "message": msg,
+        })
+
+        write_audit(
+            action="KEYPAD_VERIFY_ATTEMPT",
+            actor_user_id=None,
+            device_id=device_id,
+            target_user_id=matched_user_id,
+            status="SUCCESS" if is_valid else "FAILED",
+            details={"source": "ws_device"},
+        )
 
  
 

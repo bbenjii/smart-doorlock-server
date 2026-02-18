@@ -6,6 +6,9 @@ from services.auth_service import has_access
 from services.credentials_service import (
     get_credentials,
     enroll_method,
+    set_keypad_code,
+    verify_device_keypad_code,
+    get_device_keypad_pins_count,
     revoke_method,
     delete_method,
     get_device_credentials,
@@ -18,6 +21,15 @@ router = APIRouter(prefix="/credentials", tags=["credentials"])
 class EnrollRequest(BaseModel):
     method: str
     data: Optional[Dict[str, Any]] = None
+
+
+class KeypadCodeRequest(BaseModel):
+    code: str
+    confirmCode: str
+
+
+class KeypadVerifyRequest(BaseModel):
+    code: str
 
 
 # user-facing endpoints
@@ -46,6 +58,61 @@ async def enroll_auth_method(body: EnrollRequest, current_user: dict = Depends(g
     )
 
     return {"ok": True, "message": msg}
+
+
+@router.post("/me/keypad-code")
+async def set_my_keypad_code(body: KeypadCodeRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Set/update keypad code securely (bcrypt hash only, no plaintext persisted).
+    """
+    user_id = current_user["user_id"]
+
+    if body.code != body.confirmCode:
+        raise HTTPException(status_code=400, detail="Codes do not match")
+
+    ok, msg = set_keypad_code(user_id, body.code)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    write_audit(
+        action="KEYPAD_CODE_UPDATED",
+        actor_user_id=user_id,
+        status="SUCCESS",
+    )
+
+    return {"ok": True, "message": msg}
+
+
+@router.post("/device/{device_id}/verify-keypad")
+async def verify_keypad_for_device(
+    device_id: str,
+    body: KeypadVerifyRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Verify keypad code against users who have keypad access on this device.
+    Requires owner-level access to avoid exposing verification publicly.
+    """
+    requester_id = current_user["user_id"]
+
+    if not has_access(requester_id, device_id, "MANAGE_USERS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    is_valid, matched_user_id, msg = verify_device_keypad_code(device_id, body.code)
+
+    write_audit(
+        action="KEYPAD_VERIFY_ATTEMPT",
+        actor_user_id=requester_id,
+        device_id=device_id,
+        target_user_id=matched_user_id,
+        status="SUCCESS" if is_valid else "FAILED",
+    )
+
+    return {
+        "ok": is_valid,
+        "matchedUserId": matched_user_id,
+        "message": msg,
+    }
 
 
 @router.post("/me/revoke")
@@ -127,3 +194,16 @@ async def sync_device_credentials(device_id: str, current_user: dict = Depends(g
     )
 
     return {"ok": True, "deviceId": device_id, "credentials": credentials}
+
+
+@router.get("/device/{device_id}/keypad-count")
+async def get_device_keypad_count(device_id: str, current_user: dict = Depends(get_current_user)):
+    """
+    Return how many keypad PINs are configured for this device.
+    """
+    user_id = current_user["user_id"]
+    if not has_access(user_id, device_id, "MANAGE_USERS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    count = get_device_keypad_pins_count(device_id)
+    return {"ok": True, "deviceId": device_id, "keypadPinsCount": count}
