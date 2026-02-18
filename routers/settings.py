@@ -11,6 +11,7 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 class SettingsUpdate(BaseModel):
     notisEnabled: Optional[bool] = None
+    autoLockEnabled: Optional[bool] = None
     motionEnabled: Optional[bool] = None
     faceRecogEnabled: Optional[bool] = None
     bluetoothEnabled: Optional[bool] = None

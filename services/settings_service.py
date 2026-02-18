@@ -6,6 +6,7 @@ from db import db
 # default settings applied when a device is first claimed or has no settings record
 DEFAULTS = {
     "notisEnabled": True,
+    "autoLockEnabled": True,
     "motionEnabled": True,
     "faceRecogEnabled": True,
     "bluetoothEnabled": True,
