@@ -169,7 +169,7 @@ async def handle_device_text_message(device_id: str, text: str, websocket: WebSo
         print(f"Command finished from {device_id}: {data}")
         command_id = data.get("commandId")
         if command_id:
-            mark_command_acknowledged(command_id)
+            mark_command_acknowledged(command_id, device_id=device_id)
 
         new_status = data.get("new_status")
         if isinstance(new_status, str):
