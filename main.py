@@ -28,7 +28,7 @@ from services.dev_state_service import (
 from services.command_service import (
     create_command,
     deliver_command_with_retry,
-    mark_command_acknowledged,
+    CommandInFlightError,
 )
 
 from typing import Optional
@@ -152,7 +152,15 @@ async def send_command(device_id: str, cmd: str, current_user: dict = Depends(ge
     if not ws:
         return {"ok": False, "error": "Device not connected"}
 
-    command_id = create_command(device_id, user_id, cmd_upper)
+    try:
+        command_id = create_command(device_id, user_id, cmd_upper)
+    except CommandInFlightError as e:
+        payload = {"ok": False, "error": "Previous command still in progress"}
+        if e.command_id:
+            payload["inFlightCommandId"] = e.command_id
+        if e.expires_at:
+            payload["retryAfter"] = e.expires_at.isoformat()
+        return payload
 
     asyncio.create_task(
         deliver_command_with_retry(
