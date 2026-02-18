@@ -260,6 +260,7 @@ async def get_device_logs(
     current_user: dict = Depends(get_current_user),
     limit: int = Query(default=50, ge=1, le=200),
     cursor_ts: Optional[str] = Query(default=None),
+    action: Optional[str] = Query(default=None),
 ):
     requester_id = current_user["user_id"]
 
@@ -273,6 +274,7 @@ async def get_device_logs(
             device_id=device_id,
             limit=limit,
             cursor_ts=cursor_dt,
+            action=action,
         )
     except Exception as e:
         traceback.print_exc()

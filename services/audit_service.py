@@ -50,6 +50,7 @@ def query_audit_logs(
     device_id: str,
     limit: int = 50,
     cursor_ts: Optional[datetime] = None,
+    action: Optional[str] = None,
 ) -> Dict[str, Any]:
     bounded_limit = max(1, min(limit, 200))
 
@@ -57,8 +58,12 @@ def query_audit_logs(
         q = (
             db.collection("logs")
             .where(filter=FieldFilter("deviceId", "==", device_id))
-            .order_by("timestamp", direction=Query.DESCENDING)
         )
+
+        if action:
+            q = q.where(filter=FieldFilter("action", "==", action))
+
+        q = q.order_by("timestamp", direction=Query.DESCENDING)
 
         if cursor_ts:
             q = q.start_after({"timestamp": cursor_ts})
@@ -67,6 +72,8 @@ def query_audit_logs(
     except FailedPrecondition:
         # Missing composite index fallback: fetch unsorted and sort in memory.
         fallback_q = db.collection("logs").where(filter=FieldFilter("deviceId", "==", device_id))
+        if action:
+            fallback_q = fallback_q.where(filter=FieldFilter("action", "==", action))
         docs = list(fallback_q.limit(bounded_limit).stream())
 
     items: List[Dict[str, Any]] = []
