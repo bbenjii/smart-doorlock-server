@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
 
@@ -59,6 +60,26 @@ def enroll_method(
             "updatedAt": now,
         })
         return True, "keypad enrolled"
+
+    # Fingerprint: require at least one finger registered first.
+    if method == "fingerprint":
+        if not existing.exists:
+            return False, "No fingerprints registered. Add a fingerprint first."
+        existing_data = existing.to_dict() or {}
+        fingers = (
+            ((existing_data.get("authMethods") or {}).get("fingerprint") or {})
+            .get("data", {})
+            .get("fingers", {})
+        ) or {}
+        if not fingers:
+            return False, "No fingerprints registered. Add a fingerprint first."
+        doc_ref.update({
+            "authMethods.fingerprint.isActive": True,
+            "authMethods.fingerprint.enrolledAt": now,
+            "isActive": True,
+            "updatedAt": now,
+        })
+        return True, "fingerprint enrolled"
 
     if existing.exists:
         doc_ref.update({
@@ -367,6 +388,125 @@ def verify_device_keypad_code(
     return False, None, "Invalid keypad code"
 
 
+def add_fingerprint(
+    user_id: str,
+    nickname: str,
+    template_data: str = "",
+) -> Tuple[bool, str, Optional[str]]:
+    """Add a named fingerprint entry for a user. Returns (ok, message, fingerprint_id)."""
+    nickname = nickname.strip()
+    if not nickname:
+        return False, "Nickname is required", None
+    if len(nickname) > 50:
+        return False, "Nickname too long (max 50 chars)", None
+
+    doc_ref = db.collection("authCredentials").document(user_id)
+    now = datetime.utcnow()
+    fingerprint_id = f"fp_{uuid.uuid4().hex[:12]}"
+    finger_entry = {
+        "nickname": nickname,
+        "templateData": template_data,
+        "addedAt": now,
+    }
+
+    existing = doc_ref.get()
+    if existing.exists:
+        doc_ref.update({
+            "authMethods.fingerprint.isActive": True,
+            "authMethods.fingerprint.enrolledAt": now,
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}": finger_entry,
+            "isActive": True,
+            "updatedAt": now,
+        })
+    else:
+        doc_ref.set({
+            "userId": user_id,
+            "authMethods": {
+                "fingerprint": {
+                    "isActive": True,
+                    "enrolledAt": now,
+                    "data": {"fingers": {fingerprint_id: finger_entry}},
+                }
+            },
+            "isActive": True,
+            "createdAt": now,
+            "updatedAt": now,
+        })
+
+    return True, "Fingerprint added", fingerprint_id
+
+
+def delete_fingerprint(user_id: str, fingerprint_id: str) -> Tuple[bool, str]:
+    """Delete a specific fingerprint entry by its ID."""
+    from google.cloud.firestore_v1 import transforms
+
+    doc_ref = db.collection("authCredentials").document(user_id)
+    existing = doc_ref.get()
+
+    if not existing.exists:
+        return False, "No credentials found"
+
+    data = existing.to_dict() or {}
+    fingers = (
+        ((data.get("authMethods") or {}).get("fingerprint") or {})
+        .get("data", {})
+        .get("fingers", {})
+    ) or {}
+
+    if fingerprint_id not in fingers:
+        return False, "Fingerprint not found"
+
+    now = datetime.utcnow()
+    doc_ref.update({
+        f"authMethods.fingerprint.data.fingers.{fingerprint_id}": transforms.DELETE_FIELD,
+        "updatedAt": now,
+    })
+
+    # Deactivate fingerprint method if no fingers remain
+    updated = doc_ref.get().to_dict() or {}
+    remaining = (
+        ((updated.get("authMethods") or {}).get("fingerprint") or {})
+        .get("data", {})
+        .get("fingers", {})
+    ) or {}
+    if not remaining:
+        doc_ref.update({"authMethods.fingerprint.isActive": False, "updatedAt": now})
+        updated2 = doc_ref.get().to_dict() or {}
+        all_inactive = all(
+            not m.get("isActive", False)
+            for m in (updated2.get("authMethods") or {}).values()
+        )
+        if all_inactive:
+            doc_ref.update({"isActive": False})
+
+    return True, "Fingerprint deleted"
+
+
+def list_fingerprints(user_id: str) -> List[Dict[str, Any]]:
+    """Return all fingerprint entries (no template data) for a user."""
+    doc = db.collection("authCredentials").document(user_id).get()
+    if not doc.exists:
+        return []
+
+    data = doc.to_dict() or {}
+    fingers = (
+        ((data.get("authMethods") or {}).get("fingerprint") or {})
+        .get("data", {})
+        .get("fingers", {})
+    ) or {}
+
+    result = []
+    for fp_id, fp_data in fingers.items():
+        added_at = fp_data.get("addedAt")
+        result.append({
+            "id": fp_id,
+            "nickname": fp_data.get("nickname", ""),
+            "addedAt": added_at.isoformat() if hasattr(added_at, "isoformat") else (str(added_at) if added_at else None),
+        })
+    result.sort(key=lambda x: x.get("addedAt") or "")
+    return result
+
+
 def _empty_credentials(user_id: str) -> Dict[str, Any]:
     return {
         "userId": user_id,
@@ -390,6 +530,22 @@ def _sanitize_credentials_for_client(record: Dict[str, Any]) -> Dict[str, Any]:
             entry["data"] = {
                 "hasCode": bool(raw_data.get("hashedPin")),
                 "length": raw_data.get("length"),
+            }
+        elif method_name == "fingerprint":
+            raw_data = entry.get("data") or {}
+            fingers_raw = raw_data.get("fingers") or {}
+            fingers_list = []
+            for fp_id, fp_data in fingers_raw.items():
+                added_at = fp_data.get("addedAt")
+                fingers_list.append({
+                    "id": fp_id,
+                    "nickname": fp_data.get("nickname", ""),
+                    "addedAt": added_at.isoformat() if hasattr(added_at, "isoformat") else (str(added_at) if added_at else None),
+                })
+            fingers_list.sort(key=lambda x: x.get("addedAt") or "")
+            entry["data"] = {
+                "count": len(fingers_list),
+                "fingers": fingers_list,
             }
         sanitized_methods[method_name] = entry
 

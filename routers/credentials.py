@@ -12,6 +12,9 @@ from services.credentials_service import (
     revoke_method,
     delete_method,
     get_device_credentials,
+    add_fingerprint,
+    delete_fingerprint,
+    list_fingerprints,
 )
 from services.audit_service import write_audit
 
@@ -30,6 +33,11 @@ class KeypadCodeRequest(BaseModel):
 
 class KeypadVerifyRequest(BaseModel):
     code: str
+
+
+class AddFingerprintRequest(BaseModel):
+    nickname: str
+    templateData: Optional[str] = ""
 
 
 # user-facing endpoints
@@ -80,6 +88,44 @@ async def set_my_keypad_code(body: KeypadCodeRequest, current_user: dict = Depen
         status="SUCCESS",
     )
 
+    return {"ok": True, "message": msg}
+
+
+@router.get("/me/fingerprints")
+async def list_my_fingerprints(current_user: dict = Depends(get_current_user)):
+    """List all registered fingerprints (nickname + id, no template data)."""
+    return {"ok": True, "fingerprints": list_fingerprints(current_user["user_id"])}
+
+
+@router.post("/me/fingerprints")
+async def add_my_fingerprint(body: AddFingerprintRequest, current_user: dict = Depends(get_current_user)):
+    """Register a new fingerprint with a nickname."""
+    user_id = current_user["user_id"]
+    ok, msg, fp_id = add_fingerprint(user_id, body.nickname, body.templateData or "")
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    write_audit(
+        action="FINGERPRINT_ADDED",
+        actor_user_id=user_id,
+        status="SUCCESS",
+        details={"nickname": body.nickname},
+    )
+    return {"ok": True, "message": msg, "fingerprintId": fp_id}
+
+
+@router.delete("/me/fingerprints/{fingerprint_id}")
+async def delete_my_fingerprint(fingerprint_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete a specific fingerprint by ID."""
+    user_id = current_user["user_id"]
+    ok, msg = delete_fingerprint(user_id, fingerprint_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    write_audit(
+        action="FINGERPRINT_DELETED",
+        actor_user_id=user_id,
+        status="SUCCESS",
+        details={"fingerprintId": fingerprint_id},
+    )
     return {"ok": True, "message": msg}
 
 
