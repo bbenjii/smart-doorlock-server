@@ -1,8 +1,11 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from routers.auth import get_current_user
 from services.auth_service import has_access
+from services.command_service import create_command, deliver_command_with_retry
 from services.credentials_service import (
     get_credentials,
     enroll_method,
@@ -12,11 +15,14 @@ from services.credentials_service import (
     revoke_method,
     delete_method,
     get_device_credentials,
-    add_fingerprint,
+    start_fingerprint_enrollment,
+    complete_fingerprint_enrollment,
+    update_fingerprint_sync_status,
     delete_fingerprint,
     list_fingerprints,
 )
 from services.audit_service import write_audit
+from ws.state import connected_devices
 
 router = APIRouter(prefix="/credentials", tags=["credentials"])
 
@@ -37,7 +43,19 @@ class KeypadVerifyRequest(BaseModel):
 
 class AddFingerprintRequest(BaseModel):
     nickname: str
-    templateData: Optional[str] = ""
+    deviceId: str
+
+
+class FingerprintSyncStatusRequest(BaseModel):
+    status: str
+    error: Optional[str] = None
+
+
+class CompleteFingerprintEnrollRequest(BaseModel):
+    enrollmentId: str
+    success: bool
+    sensorTemplateId: Optional[str] = None
+    error: Optional[str] = None
 
 
 # user-facing endpoints
@@ -99,18 +117,59 @@ async def list_my_fingerprints(current_user: dict = Depends(get_current_user)):
 
 @router.post("/me/fingerprints")
 async def add_my_fingerprint(body: AddFingerprintRequest, current_user: dict = Depends(get_current_user)):
-    """Register a new fingerprint with a nickname."""
+    """
+    Start hardware fingerprint enrollment:
+    1) Create pending fingerprint record.
+    2) Send enroll command to lock device.
+    """
     user_id = current_user["user_id"]
-    ok, msg, fp_id = add_fingerprint(user_id, body.nickname, body.templateData or "")
+    device_id = body.deviceId
+
+    if not has_access(user_id, device_id, "MANAGE_USERS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if device_id not in connected_devices:
+        raise HTTPException(status_code=400, detail="Device not connected. Connect lock and try again.")
+
+    ok, msg, fp_id, enrollment_id = start_fingerprint_enrollment(user_id, device_id, body.nickname)
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
-    write_audit(
-        action="FINGERPRINT_ADDED",
-        actor_user_id=user_id,
-        status="SUCCESS",
-        details={"nickname": body.nickname},
+
+    # Format is intentionally simple for firmware parsing.
+    command_text = f"ENROLL_FINGERPRINT:{enrollment_id}:{fp_id}"
+    command_id = create_command(device_id, user_id, command_text)
+    asyncio.create_task(
+        deliver_command_with_retry(
+            command_id,
+            device_id,
+            command_text,
+            connected_devices,
+        )
     )
-    return {"ok": True, "message": msg, "fingerprintId": fp_id}
+
+    write_audit(
+        action="FINGERPRINT_ENROLL_STARTED",
+        actor_user_id=user_id,
+        device_id=device_id,
+        status="SUCCESS",
+        details={"nickname": body.nickname, "fingerprintId": fp_id, "enrollmentId": enrollment_id},
+    )
+    return {
+        "ok": True,
+        "message": "Enrollment started. Scan fingerprint on lock sensor.",
+        "fingerprintId": fp_id,
+        "enrollmentId": enrollment_id,
+        "commandId": command_id,
+        "status": "pending",
+    }
+
+
+@router.post("/me/fingerprints/start-enroll")
+async def start_my_fingerprint_enroll(body: AddFingerprintRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Alias endpoint for clients using explicit enrollment naming.
+    """
+    return await add_my_fingerprint(body, current_user)
 
 
 @router.delete("/me/fingerprints/{fingerprint_id}")
@@ -127,6 +186,64 @@ async def delete_my_fingerprint(fingerprint_id: str, current_user: dict = Depend
         details={"fingerprintId": fingerprint_id},
     )
     return {"ok": True, "message": msg}
+
+
+@router.patch("/me/fingerprints/{fingerprint_id}/sync-status")
+async def set_my_fingerprint_sync_status(
+    fingerprint_id: str,
+    body: FingerprintSyncStatusRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    ok, msg = update_fingerprint_sync_status(user_id, fingerprint_id, body.status, body.error)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    write_audit(
+        action="FINGERPRINT_SYNC_STATUS_UPDATED",
+        actor_user_id=user_id,
+        status="SUCCESS",
+        details={"fingerprintId": fingerprint_id, "status": body.status},
+    )
+    return {"ok": True, "message": msg}
+
+
+@router.post("/device/{device_id}/fingerprints/complete-enroll")
+async def complete_device_fingerprint_enroll(
+    device_id: str,
+    body: CompleteFingerprintEnrollRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Manual/owner endpoint to complete enrollment status when needed.
+    """
+    requester_id = current_user["user_id"]
+    if not has_access(requester_id, device_id, "MANAGE_USERS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    ok, msg, target_user_id, fingerprint_id = complete_fingerprint_enrollment(
+        device_id=device_id,
+        enrollment_id=body.enrollmentId,
+        success=body.success,
+        sensor_template_id=body.sensorTemplateId,
+        error=body.error,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    write_audit(
+        action="FINGERPRINT_ENROLL_COMPLETED",
+        actor_user_id=requester_id,
+        target_user_id=target_user_id,
+        device_id=device_id,
+        status="SUCCESS" if body.success else "FAILED",
+        details={
+            "fingerprintId": fingerprint_id,
+            "enrollmentId": body.enrollmentId,
+            "sensorTemplateId": body.sensorTemplateId,
+            "error": body.error,
+        },
+    )
+    return {"ok": True, "message": msg, "fingerprintId": fingerprint_id}
 
 
 @router.post("/device/{device_id}/verify-keypad")

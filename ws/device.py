@@ -34,6 +34,7 @@ from services.notification_service import create_notification, get_notification_
     get_notification_recipients_by_access, should_user_receive_notification
 from services.notification_rules import should_notify 
 from services.credentials_service import verify_device_keypad_code
+from services.credentials_service import complete_fingerprint_enrollment
 
 
 async def broadcast_status(device_id: str, status_payload: Dict[str, Any]):
@@ -206,6 +207,17 @@ async def handle_device_text_message(device_id: str, text: str, websocket: WebSo
         # track that the next incoming binary from this device is media for this event
         pending_media_event[device_id] = event_id
 
+        # push the new event to all subscribed mobile clients in real-time
+        if event_id:
+            await broadcast_status(device_id, {
+                "type": "event",
+                "eventId": event_id,
+                "eventType": event_type,
+                "userId": actor_user_id,
+                "authMethod": data.get("authMethod"),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            })
+
         should_send, required_access_level = should_notify(
             device_id=device_id,
             event_type=event_type,
@@ -262,6 +274,56 @@ async def handle_device_text_message(device_id: str, text: str, websocket: WebSo
             status="SUCCESS" if is_valid else "FAILED",
             details={"source": "ws_device"},
         )
+    elif msg_type == "fingerprint_enroll_result":
+        enrollment_id = data.get("enrollmentId")
+        success = bool(data.get("success"))
+        sensor_template_id = data.get("sensorTemplateId")
+        error = data.get("error")
+
+        ok, msg, target_user_id, fingerprint_id = complete_fingerprint_enrollment(
+            device_id=device_id,
+            enrollment_id=enrollment_id,
+            success=success,
+            sensor_template_id=sensor_template_id,
+            error=error,
+        )
+
+        if ok:
+            write_audit(
+                action="FINGERPRINT_ENROLL_COMPLETED",
+                actor_user_id=None,
+                target_user_id=target_user_id,
+                device_id=device_id,
+                status="SUCCESS" if success else "FAILED",
+                details={
+                    "source": "ws_device",
+                    "enrollmentId": enrollment_id,
+                    "fingerprintId": fingerprint_id,
+                    "sensorTemplateId": sensor_template_id,
+                    "error": error,
+                },
+            )
+            await broadcast_status(device_id, {
+                "type": "fingerprint_enroll_status",
+                "deviceId": device_id,
+                "enrollmentId": enrollment_id,
+                "fingerprintId": fingerprint_id,
+                "success": success,
+                "sensorTemplateId": sensor_template_id,
+                "error": error,
+            })
+        else:
+            write_audit(
+                action="FINGERPRINT_ENROLL_COMPLETED",
+                actor_user_id=None,
+                device_id=device_id,
+                status="FAILED",
+                details={
+                    "source": "ws_device",
+                    "enrollmentId": enrollment_id,
+                    "error": msg,
+                },
+            )
 
  
 

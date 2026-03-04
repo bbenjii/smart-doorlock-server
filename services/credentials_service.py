@@ -7,6 +7,7 @@ from utils import hash_password
 from utils import verify_password
 
 VALID_AUTH_METHODS = {"face", "fingerprint", "keypad", "bluetooth"}
+VALID_FINGERPRINT_SYNC_STATUS = {"pending", "synced", "failed"}
 
 
 def get_credentials(user_id: str) -> Dict[str, Any]:
@@ -393,28 +394,35 @@ def add_fingerprint(
     nickname: str,
     template_data: str = "",
 ) -> Tuple[bool, str, Optional[str]]:
-    """Add a named fingerprint entry for a user. Returns (ok, message, fingerprint_id)."""
+    """
+    Backward-compatible helper for direct insertion (already enrolled/synced).
+    For hardware workflow, use start_fingerprint_enrollment().
+    """
     nickname = nickname.strip()
     if not nickname:
         return False, "Nickname is required", None
     if len(nickname) > 50:
         return False, "Nickname too long (max 50 chars)", None
 
-    doc_ref = db.collection("authCredentials").document(user_id)
     now = datetime.utcnow()
     fingerprint_id = f"fp_{uuid.uuid4().hex[:12]}"
     finger_entry = {
         "nickname": nickname,
-        "templateData": template_data,
         "addedAt": now,
+        "enrollmentStatus": "enrolled",
+        "syncStatus": "synced",
+        "sensorTemplateId": template_data or None,
+        "lastError": None,
+        "enrollmentId": None,
     }
 
+    doc_ref = db.collection("authCredentials").document(user_id)
     existing = doc_ref.get()
     if existing.exists:
         doc_ref.update({
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}": finger_entry,
             "authMethods.fingerprint.isActive": True,
             "authMethods.fingerprint.enrolledAt": now,
-            f"authMethods.fingerprint.data.fingers.{fingerprint_id}": finger_entry,
             "isActive": True,
             "updatedAt": now,
         })
@@ -434,6 +442,196 @@ def add_fingerprint(
         })
 
     return True, "Fingerprint added", fingerprint_id
+
+
+def start_fingerprint_enrollment(
+    user_id: str,
+    device_id: str,
+    nickname: str,
+) -> Tuple[bool, str, Optional[str], Optional[str]]:
+    """
+    Create a pending fingerprint enrollment record.
+    Returns (ok, message, fingerprint_id, enrollment_id).
+    """
+    nickname = nickname.strip()
+    if not nickname:
+        return False, "Nickname is required", None, None
+    if len(nickname) > 50:
+        return False, "Nickname too long (max 50 chars)", None, None
+    if not device_id:
+        return False, "deviceId is required", None, None
+
+    now = datetime.utcnow()
+    fingerprint_id = f"fp_{uuid.uuid4().hex[:12]}"
+    enrollment_id = f"enr_{uuid.uuid4().hex[:16]}"
+
+    finger_entry = {
+        "nickname": nickname,
+        "addedAt": now,
+        "enrollmentStatus": "pending",
+        "syncStatus": "pending",
+        "sensorTemplateId": None,
+        "lastError": None,
+        "enrollmentId": enrollment_id,
+        "deviceId": device_id,
+    }
+
+    doc_ref = db.collection("authCredentials").document(user_id)
+    existing = doc_ref.get()
+    if existing.exists:
+        doc_ref.update({
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}": finger_entry,
+            "authMethods.fingerprint.isActive": True,
+            "authMethods.fingerprint.enrolledAt": now,
+            "isActive": True,
+            "updatedAt": now,
+        })
+    else:
+        doc_ref.set({
+            "userId": user_id,
+            "authMethods": {
+                "fingerprint": {
+                    "isActive": True,
+                    "enrolledAt": now,
+                    "data": {"fingers": {fingerprint_id: finger_entry}},
+                }
+            },
+            "isActive": True,
+            "createdAt": now,
+            "updatedAt": now,
+        })
+
+    db.collection("fingerprintEnrollments").document(enrollment_id).set({
+        "enrollmentId": enrollment_id,
+        "deviceId": device_id,
+        "userId": user_id,
+        "fingerprintId": fingerprint_id,
+        "nickname": nickname,
+        "status": "pending",
+        "createdAt": now,
+        "updatedAt": now,
+    })
+
+    return True, "Fingerprint enrollment started", fingerprint_id, enrollment_id
+
+
+def complete_fingerprint_enrollment(
+    device_id: str,
+    enrollment_id: str,
+    success: bool,
+    sensor_template_id: Optional[str] = None,
+    error: Optional[str] = None,
+) -> Tuple[bool, str, Optional[str], Optional[str]]:
+    """
+    Complete a pending fingerprint enrollment from hardware callback.
+    Returns (ok, message, user_id, fingerprint_id).
+    """
+    if not enrollment_id:
+        return False, "Missing enrollmentId", None, None
+
+    enr_ref = db.collection("fingerprintEnrollments").document(enrollment_id)
+    enr_doc = enr_ref.get()
+    if not enr_doc.exists:
+        return False, "Enrollment not found", None, None
+
+    enr = enr_doc.to_dict() or {}
+    if enr.get("deviceId") != device_id:
+        return False, "Enrollment does not belong to this device", None, None
+
+    user_id = enr.get("userId")
+    fingerprint_id = enr.get("fingerprintId")
+    if not user_id or not fingerprint_id:
+        return False, "Enrollment record is invalid", None, None
+
+    now = datetime.utcnow()
+    if success:
+        enr_ref.update({
+            "status": "completed",
+            "sensorTemplateId": sensor_template_id,
+            "error": None,
+            "updatedAt": now,
+            "completedAt": now,
+        })
+    else:
+        enr_ref.update({
+            "status": "failed",
+            "sensorTemplateId": sensor_template_id,
+            "error": error or "Enrollment failed",
+            "updatedAt": now,
+            "completedAt": now,
+        })
+
+    cred_ref = db.collection("authCredentials").document(user_id)
+    if success:
+        cred_ref.update({
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}.enrollmentStatus": "enrolled",
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}.syncStatus": "synced",
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}.sensorTemplateId": sensor_template_id,
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}.lastError": None,
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}.updatedAt": now,
+            "authMethods.fingerprint.isActive": True,
+            "authMethods.fingerprint.enrolledAt": now,
+            "isActive": True,
+            "updatedAt": now,
+        })
+    else:
+        cred_ref.update({
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}.enrollmentStatus": "failed",
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}.syncStatus": "failed",
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}.lastError": error or "Enrollment failed",
+            f"authMethods.fingerprint.data.fingers.{fingerprint_id}.updatedAt": now,
+            "updatedAt": now,
+        })
+
+    return True, "Fingerprint enrollment updated", user_id, fingerprint_id
+
+
+def update_fingerprint_sync_status(
+    user_id: str,
+    fingerprint_id: str,
+    sync_status: str,
+    error: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """
+    Manually update sync status for a fingerprint.
+    """
+    sync_status = (sync_status or "").lower().strip()
+    if sync_status not in VALID_FINGERPRINT_SYNC_STATUS:
+        return False, "Invalid sync status. Use pending, synced, or failed"
+
+    doc_ref = db.collection("authCredentials").document(user_id)
+    existing = doc_ref.get()
+    if not existing.exists:
+        return False, "No credentials found"
+
+    data = existing.to_dict() or {}
+    fingers = (
+        ((data.get("authMethods") or {}).get("fingerprint") or {})
+        .get("data", {})
+        .get("fingers", {})
+    ) or {}
+    if fingerprint_id not in fingers:
+        return False, "Fingerprint not found"
+
+    now = datetime.utcnow()
+    updates: Dict[str, Any] = {
+        f"authMethods.fingerprint.data.fingers.{fingerprint_id}.syncStatus": sync_status,
+        f"authMethods.fingerprint.data.fingers.{fingerprint_id}.updatedAt": now,
+        "updatedAt": now,
+    }
+
+    if sync_status == "synced":
+        updates[f"authMethods.fingerprint.data.fingers.{fingerprint_id}.enrollmentStatus"] = "enrolled"
+        updates[f"authMethods.fingerprint.data.fingers.{fingerprint_id}.lastError"] = None
+    elif sync_status == "failed":
+        updates[f"authMethods.fingerprint.data.fingers.{fingerprint_id}.enrollmentStatus"] = "failed"
+        updates[f"authMethods.fingerprint.data.fingers.{fingerprint_id}.lastError"] = error or "Sync failed"
+    else:
+        updates[f"authMethods.fingerprint.data.fingers.{fingerprint_id}.enrollmentStatus"] = "pending"
+        updates[f"authMethods.fingerprint.data.fingers.{fingerprint_id}.lastError"] = None
+
+    doc_ref.update(updates)
+    return True, "Fingerprint sync status updated"
 
 
 def delete_fingerprint(user_id: str, fingerprint_id: str) -> Tuple[bool, str]:
@@ -483,7 +681,7 @@ def delete_fingerprint(user_id: str, fingerprint_id: str) -> Tuple[bool, str]:
 
 
 def list_fingerprints(user_id: str) -> List[Dict[str, Any]]:
-    """Return all fingerprint entries (no template data) for a user."""
+    """Return all fingerprint entries (no raw template data) for a user."""
     doc = db.collection("authCredentials").document(user_id).get()
     if not doc.exists:
         return []
@@ -502,6 +700,11 @@ def list_fingerprints(user_id: str) -> List[Dict[str, Any]]:
             "id": fp_id,
             "nickname": fp_data.get("nickname", ""),
             "addedAt": added_at.isoformat() if hasattr(added_at, "isoformat") else (str(added_at) if added_at else None),
+            "enrollmentStatus": fp_data.get("enrollmentStatus", "pending"),
+            "syncStatus": fp_data.get("syncStatus", "pending"),
+            "sensorTemplateId": fp_data.get("sensorTemplateId"),
+            "lastError": fp_data.get("lastError"),
+            "enrollmentId": fp_data.get("enrollmentId"),
         })
     result.sort(key=lambda x: x.get("addedAt") or "")
     return result
@@ -541,6 +744,10 @@ def _sanitize_credentials_for_client(record: Dict[str, Any]) -> Dict[str, Any]:
                     "id": fp_id,
                     "nickname": fp_data.get("nickname", ""),
                     "addedAt": added_at.isoformat() if hasattr(added_at, "isoformat") else (str(added_at) if added_at else None),
+                    "enrollmentStatus": fp_data.get("enrollmentStatus", "pending"),
+                    "syncStatus": fp_data.get("syncStatus", "pending"),
+                    "sensorTemplateId": fp_data.get("sensorTemplateId"),
+                    "lastError": fp_data.get("lastError"),
                 })
             fingers_list.sort(key=lambda x: x.get("addedAt") or "")
             entry["data"] = {
