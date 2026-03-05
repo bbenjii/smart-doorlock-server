@@ -21,8 +21,15 @@ from services.credentials_service import (
     delete_fingerprint,
     list_fingerprints,
 )
+from services.face_service import (
+    start_face_enrollment,
+    finalize_face_enrollment,
+    revoke_face_credential,
+    list_device_face_enrollments,
+    get_face_enrollment_session,
+)
 from services.audit_service import write_audit
-from ws.state import connected_devices
+from ws.state import connected_devices, active_face_enrollment_session
 
 router = APIRouter(prefix="/credentials", tags=["credentials"])
 
@@ -56,6 +63,15 @@ class CompleteFingerprintEnrollRequest(BaseModel):
     success: bool
     sensorTemplateId: Optional[str] = None
     error: Optional[str] = None
+
+
+class FaceEnrollStartRequest(BaseModel):
+    userId: str
+    deviceId: str
+
+
+class FaceEnrollFinishRequest(BaseModel):
+    sessionId: str
 
 
 # user-facing endpoints
@@ -170,6 +186,125 @@ async def start_my_fingerprint_enroll(body: AddFingerprintRequest, current_user:
     Alias endpoint for clients using explicit enrollment naming.
     """
     return await add_my_fingerprint(body, current_user)
+
+
+@router.post("/face/enroll/start")
+async def start_face_enroll(body: FaceEnrollStartRequest, current_user: dict = Depends(get_current_user)):
+    requester_id = current_user["user_id"]
+    device_id = body.deviceId
+    target_user_id = body.userId
+
+    if requester_id != target_user_id and not has_access(requester_id, device_id, "MANAGE_USERS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if device_id not in connected_devices:
+        raise HTTPException(status_code=400, detail="Device not connected. Connect lock and try again.")
+
+    ok, msg, session_id = start_face_enrollment(
+        user_id=target_user_id,
+        device_id=device_id,
+        initiated_by=requester_id,
+    )
+    if not ok or not session_id:
+        raise HTTPException(status_code=400, detail=msg)
+
+    active_face_enrollment_session[device_id] = session_id
+
+    command_text = f"FACE_ENROLL_START:{session_id}"
+    command_id = create_command(device_id, requester_id, command_text)
+    asyncio.create_task(
+        deliver_command_with_retry(
+            command_id,
+            device_id,
+            command_text,
+            connected_devices,
+        )
+    )
+
+    write_audit(
+        action="FACE_ENROLL_STARTED",
+        actor_user_id=requester_id,
+        target_user_id=target_user_id,
+        device_id=device_id,
+        status="SUCCESS",
+        details={"sessionId": session_id},
+    )
+
+    return {
+        "ok": True,
+        "message": msg,
+        "sessionId": session_id,
+        "commandId": command_id,
+        "status": "in_progress",
+    }
+
+
+@router.post("/face/enroll/finish")
+async def finish_face_enroll(body: FaceEnrollFinishRequest, current_user: dict = Depends(get_current_user)):
+    requester_id = current_user["user_id"]
+    session = get_face_enrollment_session(body.sessionId)
+    if not session:
+        raise HTTPException(status_code=404, detail="Enrollment session not found")
+
+    device_id = session.get("deviceId")
+    target_user_id = session.get("userId")
+    if not device_id or not target_user_id:
+        raise HTTPException(status_code=400, detail="Enrollment session is invalid")
+
+    if requester_id != target_user_id and not has_access(requester_id, device_id, "MANAGE_USERS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    ok, msg, payload = finalize_face_enrollment(body.sessionId)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    if active_face_enrollment_session.get(device_id) == body.sessionId:
+        active_face_enrollment_session[device_id] = None
+
+    write_audit(
+        action="FACE_ENROLL_COMPLETED",
+        actor_user_id=requester_id,
+        target_user_id=target_user_id,
+        device_id=device_id,
+        status="SUCCESS",
+        details={"sessionId": body.sessionId},
+    )
+
+    return {"ok": True, "message": msg, "enrollment": payload}
+
+
+@router.delete("/face/{user_id}")
+async def revoke_face_for_user(
+    user_id: str,
+    device_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    requester_id = current_user["user_id"]
+    if requester_id != user_id and not has_access(requester_id, device_id, "MANAGE_USERS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    ok, msg = revoke_face_credential(user_id, device_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    write_audit(
+        action="FACE_CREDENTIAL_REVOKED",
+        actor_user_id=requester_id,
+        target_user_id=user_id,
+        device_id=device_id,
+        status="SUCCESS",
+    )
+    return {"ok": True, "message": msg}
+
+
+@router.get("/face/{device_id}/enrolled")
+async def get_face_enrolled_for_device(device_id: str, current_user: dict = Depends(get_current_user)):
+    requester_id = current_user["user_id"]
+    if not has_access(requester_id, device_id, "MANAGE_USERS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    users = list_device_face_enrollments(device_id)
+    return {"ok": True, "deviceId": device_id, "users": users}
 
 
 @router.delete("/me/fingerprints/{fingerprint_id}")

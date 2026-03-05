@@ -754,6 +754,13 @@ def _sanitize_credentials_for_client(record: Dict[str, Any]) -> Dict[str, Any]:
                 "count": len(fingers_list),
                 "fingers": fingers_list,
             }
+        elif method_name == "face":
+            # Never return raw embeddings to client
+            entry.pop("embedding", None)
+            entry["hasEnrollment"] = bool((method_data or {}).get("embedding"))
+            entry["qualityScore"] = (method_data or {}).get("qualityScore")
+            entry["embeddingVersion"] = (method_data or {}).get("embeddingVersion")
+            entry["deviceId"] = (method_data or {}).get("deviceId")
         sanitized_methods[method_name] = entry
 
     safe["authMethods"] = sanitized_methods

@@ -41,6 +41,7 @@ The server currently expects these runtime values:
 - `JWT_SECRET_KEY`: secret used to sign/verify JWTs
 - `REDIS_URL`: Redis connection string (default: `redis://localhost:6379/0`)
 - `FIREBASE_SERVICE_ACCOUNT_PATH` (optional for local dev): path to Firebase service-account JSON
+- `FACE_INSIGHTFACE_MODEL` (optional, default `buffalo_sc`): insightface model pack name
 
 Important:
 - `db/database.py` initializes Firebase using this order:
