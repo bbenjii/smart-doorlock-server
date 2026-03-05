@@ -15,7 +15,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60*8
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 # In-memory token blacklist for logout; Format: {token: expiry_datetime}
-
 _token_blacklist: Dict[str, datetime] = {}
 
 ROLE_PERMISSIONS = {
@@ -213,8 +212,6 @@ def has_access(
     """
     Central authorization check.
     """
-    #  it's not yet properly implemented so Im just returning true for now
-    return True
     docs = (
         db.collection("accessControl")
         .where("userId", "==", user_id)
@@ -225,6 +222,40 @@ def has_access(
     )
 
     record = next(docs, None)
+    if not record:
+        # If accessControl is missing but the user is linked to this device
+        # via users.deviceId, create an owner accessControl row on-demand.
+        try:
+            user_doc = db.collection("users").document(user_id).get()
+            if user_doc.exists:
+                user_data = user_doc.to_dict() or {}
+                if user_data.get("deviceId") == device_id:
+                    now = datetime.utcnow()
+                    db.collection("accessControl").add({
+                        "userId": user_id,
+                        "deviceId": device_id,
+                        "accessLevel": "owner",
+                        "accessMethods": ["face", "fingerprint", "keypad", "bluetooth"],
+                        "enabled": True,
+                        "invitedBy": user_id,
+                        "validFrom": None,
+                        "validUntil": None,
+                        "createdAt": now,
+                        "updatedAt": now,
+                    })
+                    # Re-run query after bootstrap
+                    docs = (
+                        db.collection("accessControl")
+                        .where("userId", "==", user_id)
+                        .where("deviceId", "==", device_id)
+                        .where("enabled", "==", True)
+                        .limit(1)
+                        .stream()
+                    )
+                    record = next(docs, None)
+        except Exception:
+            return False
+
     if not record:
         return False
 
@@ -298,7 +329,11 @@ def claim_device(user_id: str, device_id: str, pairing_code: str):
         "accessLevel": "owner",
         "accessMethods": ["face", "fingerprint", "keypad", "bluetooth"],
         "enabled": True,
+        "invitedBy": user_id,
+        "validFrom": None,
+        "validUntil": None,
         "createdAt": datetime.utcnow(),
+        "updatedAt": datetime.utcnow(),
     })
 
     # Cleanup pairing entry

@@ -5,7 +5,7 @@ import traceback
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, Any, Set
-from routers import auth, websockets, notifications, media, settings, credentials
+from routers import auth, websockets, notifications, media, settings, credentials, access
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -68,6 +68,7 @@ app.include_router(media.router)
 app.include_router(notifications.router)
 app.include_router(settings.router)
 app.include_router(credentials.router)
+app.include_router(access.router)
 
 @app.get("/camera/{device_id}/snapshot")
 async def get_snapshot(device_id: str, current_user: dict = Depends(get_current_user)):
