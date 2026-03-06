@@ -4,8 +4,18 @@ from pydantic import BaseModel
 from typing import List, Optional
 from db import db
 from routers.auth import get_current_user
+from services.auth_service import has_access
+from services.notification_service import query_notifications
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+DEFAULT_ENABLED_NOTIFICATIONS = [
+    "FORCED_ENTRY",
+    "FAILED_AUTH",
+    "BATTERY_LOW",
+    "DEVICE_OFFLINE",
+    "DOORBELL_PRESSED",
+    "WINDOW_SENSOR_TRIGGERED",
+]
 
 
 # token registration
@@ -84,6 +94,8 @@ class Prefs(BaseModel):
 @router.post("/preferences/{device_id}")
 async def update_notification_preferences(device_id: str, body: Prefs, current_user: dict = Depends(get_current_user)):
     user_id = current_user["user_id"]
+    if not has_access(user_id, device_id, "GET_STATUS"):
+        raise HTTPException(status_code=403, detail="Access denied")
     prefs_doc_id = f"{user_id}_{device_id}"
     db.collection("userPreferences").document(prefs_doc_id).set({
         "userId": user_id,
@@ -96,8 +108,22 @@ async def update_notification_preferences(device_id: str, body: Prefs, current_u
 @router.get("/preferences/{device_id}")
 async def get_notification_preferences(device_id: str, current_user: dict = Depends(get_current_user)):
     user_id = current_user["user_id"]
+    if not has_access(user_id, device_id, "GET_STATUS"):
+        raise HTTPException(status_code=403, detail="Access denied")
     prefs_doc_id = f"{user_id}_{device_id}"
     doc = db.collection("userPreferences").document(prefs_doc_id).get()
     if not doc.exists:
-        return {"enabledNotifications": ["FORCED_ENTRY", "FAILED_AUTH", "BATTERY_LOW", "DEVICE_OFFLINE", "DOORBELL_PRESSED", "WINDOW_SENSOR_TRIGGERED"]}
+        return {"enabledNotifications": DEFAULT_ENABLED_NOTIFICATIONS}
     return doc.to_dict()
+
+
+@router.get("/{device_id}")
+async def get_notifications(
+    device_id: str,
+    limit: int = 50,
+    current_user: dict = Depends(get_current_user),
+):
+    user_id = current_user["user_id"]
+    if not has_access(user_id, device_id, "GET_STATUS"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return query_notifications(device_id=device_id, user_id=user_id, limit=limit)

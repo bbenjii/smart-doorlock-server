@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from db import db
 from utils import hash_password
 from utils import verify_password
+from services.settings_service import is_auth_method_enabled
 
 VALID_AUTH_METHODS = {"face", "fingerprint", "keypad", "bluetooth"}
 VALID_FINGERPRINT_SYNC_STATUS = {"pending", "synced", "failed"}
@@ -260,7 +261,11 @@ def get_device_credentials(device_id: str) -> List[Dict[str, Any]]:
         # filter to only methods that are both enrolled+active AND allowed on this device
         filtered_methods = {}
         for method_name, method_data in all_methods.items():
-            if method_name in allowed_methods and method_data.get("isActive", False):
+            if (
+                method_name in allowed_methods
+                and method_data.get("isActive", False)
+                and is_auth_method_enabled(device_id, method_name)
+            ):
                 filtered_methods[method_name] = method_data
 
         if filtered_methods:
@@ -325,6 +330,8 @@ def verify_device_keypad_code(
     """
     if not code or not code.isdigit():
         return False, None, "Invalid code format"
+    if not is_auth_method_enabled(device_id, "keypad"):
+        return False, None, "Keypad is disabled for this device"
 
     access_docs = list(
         db.collection("accessControl")
@@ -460,6 +467,8 @@ def start_fingerprint_enrollment(
         return False, "Nickname too long (max 50 chars)", None, None
     if not device_id:
         return False, "deviceId is required", None, None
+    if not is_auth_method_enabled(device_id, "fingerprint"):
+        return False, "Fingerprint is disabled for this device", None, None
 
     now = datetime.utcnow()
     fingerprint_id = f"fp_{uuid.uuid4().hex[:12]}"

@@ -10,6 +10,7 @@ import numpy as np
 from insightface.app import FaceAnalysis
 
 from db import db
+from services.settings_service import is_auth_method_enabled
 
 
 EMBEDDING_DIM = 512
@@ -224,6 +225,8 @@ def start_face_enrollment(user_id: str, device_id: str, initiated_by: Optional[s
         return False, "userId is required", None
     if not device_id:
         return False, "deviceId is required", None
+    if not is_auth_method_enabled(device_id, "face"):
+        return False, "Face unlock is disabled for this device", None
 
     try:
         _load_face_app()
@@ -503,6 +506,19 @@ def _get_active_face_entry(cred: Dict[str, Any], device_id: str) -> Optional[Dic
 
 def verify_face(device_id: str, frames: List[bytes]) -> Dict[str, Any]:
     started = time.perf_counter()
+
+    if not is_auth_method_enabled(device_id, "face"):
+        return {
+            "matched": False,
+            "matchedUserId": None,
+            "score": 0.0,
+            "threshold": _face_threshold(),
+            "livenessPassed": False,
+            "action": "DENY",
+            "reason": "method_disabled",
+            "processingMs": int((time.perf_counter() - started) * 1000),
+            "frameCount": len([f for f in frames if f]),
+        }
 
     valid_frames = [f for f in frames if f]
     if not valid_frames:

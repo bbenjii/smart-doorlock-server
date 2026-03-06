@@ -14,6 +14,7 @@ class SettingsUpdate(BaseModel):
     autoLockEnabled: Optional[bool] = None
     motionEnabled: Optional[bool] = None
     faceRecogEnabled: Optional[bool] = None
+    fingerprintEnabled: Optional[bool] = None
     bluetoothEnabled: Optional[bool] = None
     keypadEnabled: Optional[bool] = None
     cloudEnabled: Optional[bool] = None

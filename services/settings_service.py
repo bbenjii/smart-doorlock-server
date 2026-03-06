@@ -9,12 +9,20 @@ DEFAULTS = {
     "autoLockEnabled": True,
     "motionEnabled": True,
     "faceRecogEnabled": True,
+    "fingerprintEnabled": True,
     "bluetoothEnabled": True,
     "keypadEnabled": True,
     "cloudEnabled": False,
 }
 
 ALLOWED_FIELDS = set(DEFAULTS.keys())
+
+AUTH_METHOD_TO_SETTING_FIELD = {
+    "face": "faceRecogEnabled",
+    "fingerprint": "fingerprintEnabled",
+    "keypad": "keypadEnabled",
+    "bluetooth": "bluetoothEnabled",
+}
 
 
 def _settings_doc_id(device_id: str, user_id: Optional[str] = None) -> str:
@@ -92,3 +100,16 @@ def update_settings(
         doc_ref.set(payload)
 
     return get_settings(device_id, user_id)
+
+
+def is_auth_method_enabled(device_id: str, auth_method: str) -> bool:
+    """
+    Device-level auth method gate.
+    Uses defaults when explicit device settings are absent.
+    """
+    setting_field = AUTH_METHOD_TO_SETTING_FIELD.get((auth_method or "").strip().lower())
+    if not setting_field:
+        return True
+
+    settings = get_settings(device_id)
+    return bool(settings.get(setting_field, True))
