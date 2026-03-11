@@ -111,6 +111,57 @@ def _decode_bgr(frame_bytes: bytes) -> Optional[np.ndarray]:
     return img
 
 
+def annotate_faces(frame_bytes: bytes) -> Tuple[bytes, Dict[str, Any]]:
+    if not frame_bytes:
+        return frame_bytes, {"faceCount": 0, "faces": []}
+
+    img = _decode_bgr(frame_bytes)
+    if img is None:
+        return frame_bytes, {"faceCount": 0, "faces": []}
+
+    try:
+        faces = _load_face_app().get(img)
+    except Exception:
+        return frame_bytes, {"faceCount": 0, "faces": []}
+
+    boxes: List[Dict[str, Any]] = []
+    for face in faces:
+        bbox = getattr(face, "bbox", None)
+        if bbox is None or len(bbox) != 4:
+            continue
+
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(img.shape[1], x2)
+        y2 = min(img.shape[0], y2)
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        score = round(float(getattr(face, "det_score", 0.0) or 0.0), 4)
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(
+            img,
+            f"{score:.2f}",
+            (x1, max(18, y1 - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+        boxes.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2, "score": score})
+
+    if not boxes:
+        return frame_bytes, {"faceCount": 0, "faces": []}
+
+    ok, encoded = cv2.imencode(".jpg", img)
+    if not ok:
+        return frame_bytes, {"faceCount": len(boxes), "faces": boxes}
+
+    return encoded.tobytes(), {"faceCount": len(boxes), "faces": boxes}
+
+
 def _pick_primary_face(faces: List[Any]) -> Optional[Any]:
     if not faces:
         return None
