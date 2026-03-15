@@ -119,10 +119,45 @@ def annotate_faces(frame_bytes: bytes) -> Tuple[bytes, Dict[str, Any]]:
     if img is None:
         return frame_bytes, {"faceCount": 0, "faces": []}
 
+    rendered_at = datetime.now().astimezone()
+    timestamp_text = rendered_at.strftime("%Y-%m-%d %H:%M:%S %Z")
+    (text_width, text_height), baseline = cv2.getTextSize(
+        timestamp_text,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        2,
+    )
+    text_x = 12
+    text_y = img.shape[0] - 16
+    box_top = max(0, text_y - text_height - 10)
+    box_bottom = min(img.shape[0], text_y + baseline + 6)
+    box_right = min(img.shape[1], text_x + text_width + 12)
+
+    cv2.rectangle(
+        img,
+        (text_x - 6, box_top),
+        (box_right, box_bottom),
+        (0, 0, 0),
+        -1,
+    )
+    cv2.putText(
+        img,
+        timestamp_text,
+        (text_x, text_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
     try:
         faces = _load_face_app().get(img)
     except Exception:
-        return frame_bytes, {"faceCount": 0, "faces": []}
+        ok, encoded = cv2.imencode(".jpg", img)
+        if not ok:
+            return frame_bytes, {"faceCount": 0, "faces": []}
+        return encoded.tobytes(), {"faceCount": 0, "faces": []}
 
     boxes: List[Dict[str, Any]] = []
     for face in faces:
@@ -152,12 +187,14 @@ def annotate_faces(frame_bytes: bytes) -> Tuple[bytes, Dict[str, Any]]:
         )
         boxes.append({"x1": x1, "y1": y1, "x2": x2, "y2": y2, "score": score})
 
-    if not boxes:
-        return frame_bytes, {"faceCount": 0, "faces": []}
-
     ok, encoded = cv2.imencode(".jpg", img)
     if not ok:
+        if not boxes:
+            return frame_bytes, {"faceCount": 0, "faces": []}
         return frame_bytes, {"faceCount": len(boxes), "faces": boxes}
+
+    if not boxes:
+        return encoded.tobytes(), {"faceCount": 0, "faces": []}
 
     return encoded.tobytes(), {"faceCount": len(boxes), "faces": boxes}
 
