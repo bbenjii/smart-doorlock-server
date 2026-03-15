@@ -44,7 +44,12 @@ from services.notification_service import (
 )
 from services.notification_rules import should_notify
 from services.credentials_service import verify_device_keypad_code, complete_fingerprint_enrollment
-from services.face_service import add_face_enrollment_frame, verify_face, log_face_auth_attempt
+from services.face_service import (
+    add_face_enrollment_frame,
+    annotate_faces,
+    verify_face,
+    log_face_auth_attempt,
+)
 
 
 async def broadcast_status(device_id: str, status_payload: Dict[str, Any]):
@@ -335,14 +340,20 @@ async def handle_device_text_message(device_id: str, text: str, websocket: WebSo
 
 
 async def handle_device_binary_message(device_id: str, binary: bytes, websocket: WebSocket):
-    last_frame_bytes[device_id] = binary
-    last_frame_meta[device_id] = {"timestamp": asyncio.get_event_loop().time()}
+    raw_binary = binary
+    display_binary, face_meta = annotate_faces(raw_binary)
+
+    last_frame_bytes[device_id] = display_binary
+    last_frame_meta[device_id] = {
+        "timestamp": asyncio.get_event_loop().time(),
+        **face_meta,
+    }
 
     try:
         set_latest_frame(
             device_id,
-            binary,
-            meta={"timestamp": last_frame_meta[device_id]["timestamp"]},
+            display_binary,
+            meta=last_frame_meta[device_id],
             ttl=60,
         )
     except Exception as e:
@@ -350,7 +361,7 @@ async def handle_device_binary_message(device_id: str, binary: bytes, websocket:
 
     verify_state = pending_face_verify.get(device_id)
     if verify_state:
-        verify_state["frames"].append(binary)
+        verify_state["frames"].append(raw_binary)
         expected = int(verify_state.get("frameCount") or 3)
         if len(verify_state["frames"]) >= expected:
             result = verify_face(device_id, verify_state["frames"])
